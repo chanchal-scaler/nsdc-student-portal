@@ -127,20 +127,16 @@ const job = {
     fileName: null
 };
 
-function startDownloadJob() {
-    // Remove CSVs from previous runs so student PII doesn't accumulate on disk
+// Reset job state back to idle and remove any CSVs on disk, so student PII
+// doesn't linger and a finished download doesn't reappear after a page reload.
+function resetJob() {
     for (const f of fs.readdirSync(DATA_DIR)) {
         if (f.endsWith('.csv')) {
             try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
         }
     }
-
-    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
-    const fileName = `students_list_${dateStr}.csv`;
-    const outputFile = path.join(DATA_DIR, fileName);
-
-    job.state = 'running';
-    job.startedAt = new Date().toISOString();
+    job.state = 'idle';
+    job.startedAt = null;
     job.finishedAt = null;
     job.pagesFetched = 0;
     job.totalPages = null;
@@ -149,6 +145,18 @@ function startDownloadJob() {
     job.error = null;
     job.file = null;
     job.fileName = null;
+}
+
+function startDownloadJob() {
+    // Clear any previous run (and its CSV) before starting a fresh one
+    resetJob();
+
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `students_list_${dateStr}.csv`;
+    const outputFile = path.join(DATA_DIR, fileName);
+
+    job.state = 'running';
+    job.startedAt = new Date().toISOString();
 
     fetchAndWriteStudents({
         userName: NSDC_USERNAME,
@@ -190,7 +198,9 @@ app.post('/login', (req, res) => {
     }
 
     const { email, password } = req.body || {};
-    if (email && password && safeEqual(email.trim().toLowerCase(), LOGIN_EMAIL.toLowerCase()) && safeEqual(password, LOGIN_PASSWORD)) {
+    if (typeof email === 'string' && typeof password === 'string' &&
+        safeEqual(email.trim().toLowerCase(), LOGIN_EMAIL.toLowerCase()) &&
+        safeEqual(password, LOGIN_PASSWORD)) {
         loginAttempts.delete(ip);
         // Rotate the session ID on login to prevent session fixation
         return req.session.regenerate(err => {
@@ -215,6 +225,12 @@ app.post('/logout', (req, res) => {
 });
 
 app.get('/', requireLogin, (req, res) => {
+    // Start each page visit from a clean slate: a finished or failed job (and its
+    // CSV) is cleared on reload so it doesn't linger and confuse. A running job is
+    // left untouched so refreshing mid-download still shows live progress.
+    if (job.state !== 'running') {
+        resetJob();
+    }
     res.sendFile(path.join(__dirname, 'views', 'dashboard.html'));
 });
 
