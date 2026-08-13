@@ -1,0 +1,23 @@
+{
+  "name": "nsdc-student-portal",
+  "version": "1.0.0",
+  "description": "Login-protected portal to download NSDC student data as CSV",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-session": "^1.18.0",
+    "helmet": "^7.1.0",
+    "memorystore": "^1.6.7",
+    "fetch-cookie": "^3.0.1",
+    "node-fetch": "^3.3.2",
+    "node-forge": "^1.3.1",
+    "tough-cookie": "^4.1.4"
+  }
+}
