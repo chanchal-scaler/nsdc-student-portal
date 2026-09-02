@@ -2,7 +2,7 @@
  * A stand-in for the Skill India (NSDC) admin API, for testing only.
  *
  * It speaks the same endpoints the real service does — CSRF token, public key,
- * login, candidate registration and batch creation — including RSA-OAEP password encryption
+ * login, candidate registration, batch creation and enrolment — including RSA-OAEP password encryption
  * and the "User Already Exist - CAN_…" duplicate response. Point the portal at
  * it and the entire upload path runs for real, except no candidate is created
  * anywhere outside this process.
@@ -165,14 +165,49 @@ app.post('/api/batch/v1/create', (req, res) => {
     res.json({ Message: 'Created', batchId, batchName, infoMsgForSTT: '' });
 });
 
+const enrolments = [];
+const enrolledPairs = new Set();
+
+app.post('/api/thirdparty/v1/enroll/Candidate', (req, res) => {
+    if (!req.get('Authorization')) {
+        return res.status(401).json({ message: 'Missing Authorization header' });
+    }
+    if (!req.get('X-Csrf-Token')) {
+        return res.status(412).json({ message: 'CSRF token missing' });
+    }
+
+    const { batchId, candidateIds } = req.body || {};
+    if (!batchId || !Array.isArray(candidateIds) || candidateIds.length === 0) {
+        return res.status(400).json({ message: 'batchId and a non-empty candidateIds array are required' });
+    }
+
+    const fresh = candidateIds.filter(id => !enrolledPairs.has(`${id}|${batchId}`));
+
+    if (fresh.length === 0) {
+        log(`enrol batch ${batchId}: all ${candidateIds.length} already enrolled`);
+        return res.status(409).send('Candidates already enrolled in this batch');
+    }
+
+    for (const id of fresh) {
+        enrolledPairs.add(`${id}|${batchId}`);
+        enrolments.push({ batchId, candidateId: id });
+    }
+
+    log(`enrol batch ${batchId}: ${fresh.length} candidate(s) enrolled`);
+    res.json({ message: 'Candidates enrolled successfully', batchId, enrolled: fresh.length });
+});
+
 // Test helpers, not part of the real API
 app.get('/_mock/registrations', (_req, res) => res.json(registrations));
 app.get('/_mock/batches', (_req, res) => res.json(createdBatches));
+app.get('/_mock/enrolments', (_req, res) => res.json(enrolments));
 app.post('/_mock/reset', (_req, res) => {
     candidatesByEmail.clear();
     registrations.length = 0;
     batchesByName.clear();
     createdBatches.length = 0;
+    enrolledPairs.clear();
+    enrolments.length = 0;
     res.json({ ok: true });
 });
 

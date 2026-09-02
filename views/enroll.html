@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Upload Students — NSDC Student Portal</title>
+<title>Enrol Students — NSDC Student Portal</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -80,9 +80,9 @@
 <body>
   <div class="container">
     <div class="header">
-      <h1>Upload Students</h1>
+      <h1>Enrol Students in Batches</h1>
       <div>
-        <span class="nav"><a href="/">Download student data</a><a href="/batches">Create batches</a><a href="/enroll">Enrol students</a></span>
+        <span class="nav"><a href="/">Download student data</a><a href="/upload">Upload students</a><a href="/batches">Create batches</a></span>
         <form class="logout" method="POST" action="/logout" style="display:inline"><button type="submit">Sign out</button></form>
       </div>
     </div>
@@ -90,24 +90,22 @@
     <div class="card">
       <div class="banner" id="banner"></div>
 
-      <p>Upload a sheet of students. Each row is registered on Skill India (NSDC) and comes back with a candidate ID.</p>
+      <p>Upload a sheet of students and the batch each one belongs to. Candidate and batch IDs are looked up from earlier uploads — the sheet only needs an email and a batch name.</p>
 
       <ul class="rules">
-        <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB.</li>
-        <li>Required columns: <code>namePrefix</code>, <code>name</code>, <code>dob</code>, <code>guardianName</code>, <code>email</code>, <code>phone</code>. Common spellings such as "Student Name" or "Mobile" are recognised automatically.</li>
-        <li><code>dob</code> must be written as <code>YYYY-MM-DD</code>. Dates like 6/7/1991 are rejected rather than guessed.</li>
-        <li>Rows are checked the same way the existing upload script checks them — email, dob and guardianName. Everything else is sent through exactly as written in the sheet.</li>
-        <li>Gender is taken from <code>namePrefix</code> (Mr. → male, anything else → female), matching how NSDC records were created until now.</li>
-        <li><strong>Preview payload only</strong> validates the sheet and shows the exact JSON that would be sent to NSDC — no request is made and no candidate is created.</li>
-        <li>Nothing is sent to NSDC until every row passes validation.</li>
-        <li>Already-registered students are not duplicated — their existing candidate ID is returned.</li>
+        <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB. Two columns: <code>email</code> and <code>batchName</code>.</li>
+        <li>Every student going into the same batch is enrolled in one request, the way the existing script does it.</li>
+        <li>A student whose email has no stored candidate ID is reported, not sent — upload them on the Students page first.</li>
+        <li>A batch name with no stored batch ID is reported too — create it on the Batches page first.</li>
+        <li>Students already recorded as enrolled in that batch are skipped, so the same sheet can be run again safely.</li>
+        <li><strong>Preview payload only</strong> resolves the IDs and shows the exact JSON that would be sent — no request is made and nobody is enrolled.</li>
       </ul>
 
       <div class="file-row">
         <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
         <button class="btn btn-secondary" id="previewBtn">Preview payload only</button>
-        <button class="btn btn-primary" id="uploadBtn">Upload and register</button>
-        <a class="link-template" href="/api/upload/template">Download template</a>
+        <button class="btn btn-primary" id="uploadBtn">Enrol students</button>
+        <a class="link-template" href="/api/enroll/template">Download template</a>
       </div>
 
       <div class="status" id="status"></div>
@@ -118,18 +116,18 @@
       </div>
 
       <div class="download-row" id="downloadRow">
-        <a class="btn btn-success" href="/api/upload/result">Download result CSV</a>
+        <a class="btn btn-success" href="/api/enroll/result">Download result CSV</a>
         <div class="meta" id="fileMeta"></div>
       </div>
 
       <div class="preview" id="preview">
         <h2 id="previewTitle">Payload preview</h2>
         <pre id="previewBody"></pre>
-        <a class="link-template" href="/api/upload/preview/file" id="previewDownload">Download all payloads as JSON</a>
+        <a class="link-template" href="/api/enroll/preview/file" id="previewDownload">Download all payloads as JSON</a>
       </div>
     </div>
   </div>
 
-  <script src="/upload.js"></script>
+  <script src="/enroll.js"></script>
 </body>
 </html>
