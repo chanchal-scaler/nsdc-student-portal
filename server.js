@@ -6,7 +6,12 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import multer from 'multer';
 import { fetchAndWriteStudents } from './lib/nsdc.js';
+import { parseStudentSheet, parseBatchSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS } from './lib/sheet.js';
+import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
+import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
+import { initSchema, saveCandidate, saveBatch, isEnabled as dbEnabled } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -131,7 +136,7 @@ const job = {
 // doesn't linger and a finished download doesn't reappear after a page reload.
 function resetJob() {
     for (const f of fs.readdirSync(DATA_DIR)) {
-        if (f.endsWith('.csv')) {
+        if (f.startsWith('students_list_') && f.endsWith('.csv')) {
             try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
         }
     }
@@ -182,6 +187,227 @@ function startDownloadJob() {
         job.finishedAt = new Date().toISOString();
         job.error = err.message;
         console.error('Download job failed:', err);
+    });
+}
+
+// ---- Student upload job state (one job at a time) ----
+const upload = {
+    state: 'idle', // idle | running | done | error
+    startedAt: null,
+    finishedAt: null,
+    fileName: null,
+    processed: 0,
+    total: 0,
+    created: 0,
+    duplicates: 0,
+    failed: 0,
+    error: null,
+    resultFile: null,
+    resultFileName: null
+};
+
+// Holds the most recent payload preview so it can be downloaded as a file.
+let previewFile = null;
+
+// Sheets are read in memory and never written to disk — only the result CSV is.
+const sheetUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024, files: 1 }
+});
+
+function resetUpload() {
+    for (const f of fs.readdirSync(DATA_DIR)) {
+        if ((f.startsWith('upload_result_') && f.endsWith('.csv')) ||
+            (f.startsWith('payload_preview_') && f.endsWith('.json'))) {
+            try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
+        }
+    }
+    upload.state = 'idle';
+    upload.startedAt = null;
+    upload.finishedAt = null;
+    upload.fileName = null;
+    upload.processed = 0;
+    upload.total = 0;
+    upload.created = 0;
+    upload.duplicates = 0;
+    upload.failed = 0;
+    upload.error = null;
+    upload.resultFile = null;
+    upload.resultFileName = null;
+}
+
+function csvCell(value) {
+    return '"' + String(value ?? '').replace(/"/g, '""') + '"';
+}
+
+function writeResultCsv(results) {
+    const headers = ['rowNumber', 'name', 'email', 'phone', 'dob', 'candidateId', 'status', 'error'];
+    const lines = [headers.join(',')];
+
+    for (const result of results) {
+        lines.push(headers.map(h => csvCell(result[h])).join(','));
+    }
+
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `upload_result_${dateStr}.csv`;
+    const filePath = path.join(DATA_DIR, fileName);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    return { filePath, fileName };
+}
+
+function startUploadJob(students, sourceFileName) {
+    resetUpload();
+
+    upload.state = 'running';
+    upload.startedAt = new Date().toISOString();
+    upload.fileName = sourceFileName;
+    upload.total = students.length;
+
+    uploadStudents({
+        userName: NSDC_USERNAME,
+        password: NSDC_PASSWORD,
+        students,
+        onProgress: ({ processed, created, duplicates, failed }) => {
+            upload.processed = processed;
+            upload.created = created;
+            upload.duplicates = duplicates;
+            upload.failed = failed;
+        }
+    }).then(async ({ results, created, duplicates, failed }) => {
+        // The CSV is written first: it is the user's copy of the candidate IDs
+        // and must survive even if the database write fails.
+        const { filePath, fileName } = writeResultCsv(results);
+
+        for (const result of results) {
+            // Dry runs invent candidate IDs, so they must never reach the database
+            if (!result.candidateId || isDryRun) continue;
+            try {
+                await saveCandidate({
+                    candidateId: result.candidateId,
+                    email: result.email,
+                    name: result.name,
+                    phone: result.phone,
+                    status: result.status,
+                    sourceFile: sourceFileName
+                });
+            } catch (err) {
+                console.error(`Could not store ${result.candidateId}:`, err.message);
+            }
+        }
+
+        upload.state = 'done';
+        upload.finishedAt = new Date().toISOString();
+        upload.created = created;
+        upload.duplicates = duplicates;
+        upload.failed = failed;
+        upload.resultFile = filePath;
+        upload.resultFileName = fileName;
+        console.log(`Upload complete: ${created} new, ${duplicates} duplicate, ${failed} failed`);
+    }).catch(err => {
+        upload.state = 'error';
+        upload.finishedAt = new Date().toISOString();
+        upload.error = err.message;
+        console.error('Upload job failed:', err);
+    });
+}
+
+// ---- Batch upload job state (one job at a time) ----
+const batchJob = {
+    state: 'idle', // idle | running | done | error
+    startedAt: null,
+    finishedAt: null,
+    fileName: null,
+    processed: 0,
+    total: 0,
+    created: 0,
+    failed: 0,
+    error: null,
+    resultFile: null,
+    resultFileName: null
+};
+
+let batchPreviewFile = null;
+
+function resetBatchJob() {
+    for (const f of fs.readdirSync(DATA_DIR)) {
+        if ((f.startsWith('batch_result_') && f.endsWith('.csv')) ||
+            (f.startsWith('batch_payload_preview_') && f.endsWith('.json'))) {
+            try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
+        }
+    }
+    batchJob.state = 'idle';
+    batchJob.startedAt = null;
+    batchJob.finishedAt = null;
+    batchJob.fileName = null;
+    batchJob.processed = 0;
+    batchJob.total = 0;
+    batchJob.created = 0;
+    batchJob.failed = 0;
+    batchJob.error = null;
+    batchJob.resultFile = null;
+    batchJob.resultFileName = null;
+}
+
+function writeBatchResultCsv(results) {
+    const headers = ['rowNumber', 'batchName', 'size', 'batchStartDate', 'batchEndDate', 'batchId', 'status', 'error'];
+    const lines = [headers.join(',')];
+    for (const result of results) {
+        lines.push(headers.map(h => csvCell(result[h])).join(','));
+    }
+
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `batch_result_${dateStr}.csv`;
+    const filePath = path.join(DATA_DIR, fileName);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+    return { filePath, fileName };
+}
+
+function startBatchJob(batches, sourceFileName) {
+    resetBatchJob();
+
+    batchJob.state = 'running';
+    batchJob.startedAt = new Date().toISOString();
+    batchJob.fileName = sourceFileName;
+    batchJob.total = batches.length;
+
+    uploadBatches({
+        userName: NSDC_USERNAME,
+        password: NSDC_PASSWORD,
+        batches,
+        onProgress: ({ processed, created, failed }) => {
+            batchJob.processed = processed;
+            batchJob.created = created;
+            batchJob.failed = failed;
+        }
+    }).then(async ({ results, created, failed }) => {
+        const { filePath, fileName } = writeBatchResultCsv(results);
+
+        for (const result of results) {
+            if (!result.batchId) continue;
+            try {
+                await saveBatch({
+                    batchId: result.batchId,
+                    batchName: result.batchName,
+                    sourceFile: sourceFileName
+                });
+            } catch (err) {
+                console.error(`Could not store batch ${result.batchId}:`, err.message);
+            }
+        }
+
+        batchJob.state = 'done';
+        batchJob.finishedAt = new Date().toISOString();
+        batchJob.created = created;
+        batchJob.failed = failed;
+        batchJob.resultFile = filePath;
+        batchJob.resultFileName = fileName;
+        console.log(`Batch upload complete: ${created} created, ${failed} failed`);
+    }).catch(err => {
+        batchJob.state = 'error';
+        batchJob.finishedAt = new Date().toISOString();
+        batchJob.error = err.message;
+        console.error('Batch upload job failed:', err);
     });
 }
 
@@ -264,7 +490,256 @@ app.get('/api/download/file', requireLogin, (req, res) => {
     res.download(job.file, job.fileName);
 });
 
+app.get('/upload', requireLogin, (req, res) => {
+    if (upload.state !== 'running') {
+        resetUpload();
+    }
+    res.sendFile(path.join(__dirname, 'views', 'upload.html'));
+});
+
+app.get('/api/upload/template', requireLogin, (req, res) => {
+    const example = ['Mr.', 'Rahul Sharma', 'male', '1997-04-07', 'Suresh Sharma', 'rahul.sharma@example.com', '9876543210', '91'];
+    const csv = TEMPLATE_COLUMNS.join(',') + '\n' + example.join(',') + '\n';
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="student_upload_template.csv"');
+    res.send(csv);
+});
+
+app.post('/api/upload/students', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (upload.state === 'running') {
+        return res.status(409).json({ error: 'An upload is already in progress' });
+    }
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file received' });
+    }
+    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
+        return res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
+    }
+
+    let parsed;
+    try {
+        parsed = await parseStudentSheet(req.file.buffer, req.file.originalname);
+    } catch (err) {
+        return res.status(400).json({ error: `Could not read the file: ${err.message}` });
+    }
+
+    // Nothing reaches NSDC until the whole sheet is clean, so a half-uploaded
+    // file can never leave some candidates created and the rest rejected.
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        return res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+    }
+
+    if (parsed.rows.length === 0) {
+        return res.status(400).json({ error: 'The sheet has no student rows' });
+    }
+
+    startUploadJob(parsed.rows, req.file.originalname);
+    res.json({ started: true, total: parsed.rows.length, ignoredColumns: parsed.ignoredColumns });
+});
+
+app.post('/api/upload/preview', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file received' });
+    }
+
+    let parsed;
+    try {
+        parsed = await parseStudentSheet(req.file.buffer, req.file.originalname);
+    } catch (err) {
+        return res.status(400).json({ error: `Could not read the file: ${err.message}` });
+    }
+
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        return res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+    }
+
+    // Exactly what a real run would send, without sending any of it
+    const payloads = parsed.rows.map(row => ({
+        row: row.rowNumber,
+        method: 'POST',
+        url: 'https://adminservices.skillindiadigital.gov.in/api/user/v1/register/Candidate/v1',
+        body: buildPayload(row)
+    }));
+
+    const fileName = `payload_preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(payloads, null, 2), 'utf8');
+    previewFile = { path: path.join(DATA_DIR, fileName), name: fileName };
+
+    res.json({ total: payloads.length, fileName, payloads: payloads.slice(0, 20), ignoredColumns: parsed.ignoredColumns });
+});
+
+app.get('/api/upload/preview/file', requireLogin, (req, res) => {
+    if (!previewFile || !fs.existsSync(previewFile.path)) {
+        return res.status(404).json({ error: 'No preview available. Run a preview first.' });
+    }
+    res.download(previewFile.path, previewFile.name);
+});
+
+app.get('/api/upload/status', requireLogin, (req, res) => {
+    res.json({
+        state: upload.state,
+        startedAt: upload.startedAt,
+        finishedAt: upload.finishedAt,
+        fileName: upload.fileName,
+        processed: upload.processed,
+        total: upload.total,
+        created: upload.created,
+        duplicates: upload.duplicates,
+        failed: upload.failed,
+        error: upload.error,
+        resultReady: Boolean(upload.resultFile),
+        resultFileName: upload.resultFileName,
+        dryRun: isDryRun,
+        dbEnabled
+    });
+});
+
+app.get('/api/upload/result', requireLogin, (req, res) => {
+    if (!upload.resultFile || !fs.existsSync(upload.resultFile)) {
+        return res.status(404).json({ error: 'No result available. Run an upload first.' });
+    }
+    res.download(upload.resultFile, upload.resultFileName);
+});
+
+app.get('/batches', requireLogin, (req, res) => {
+    if (batchJob.state !== 'running') {
+        resetBatchJob();
+    }
+    res.sendFile(path.join(__dirname, 'views', 'batches.html'));
+});
+
+app.get('/api/batches/template', requireLogin, (req, res) => {
+    const example = [
+        'Academy Jan26', '100', '10-Jan-2026', '13-Feb-2027', 'FeeSchCor_31336_v1', '1',
+        '1/10/2026 2:00:00', '2/13/2027 2:00:00', '319000', 'Self-Paid',
+        '20-Feb-2027', '21-Feb-2027', 'Self', 'Regular', 'Fee Based',
+        'NSDC Market led programme', '1', 'Fee Based', '34735', 'Scheme_1159',
+        'TP155158', 'TC205331'
+    ];
+    const csv = BATCH_COLUMNS.join(',') + '\n' + example.join(',') + '\n';
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="batch_upload_template.csv"');
+    res.send(csv);
+});
+
+app.post('/api/batches/preview', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file received' });
+    }
+
+    let parsed;
+    try {
+        parsed = await parseBatchSheet(req.file.buffer, req.file.originalname);
+    } catch (err) {
+        return res.status(400).json({ error: `Could not read the file: ${err.message}` });
+    }
+
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        return res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+    }
+
+    const payloads = parsed.rows.map(row => ({
+        row: row.rowNumber,
+        method: 'POST',
+        url: 'https://adminservices.skillindiadigital.gov.in/api/batch/v1/create',
+        body: buildBatchPayload(row)
+    }));
+
+    const fileName = `batch_payload_preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(payloads, null, 2), 'utf8');
+    batchPreviewFile = { path: path.join(DATA_DIR, fileName), name: fileName };
+
+    res.json({ total: payloads.length, fileName, payloads: payloads.slice(0, 20), ignoredColumns: parsed.ignoredColumns });
+});
+
+app.get('/api/batches/preview/file', requireLogin, (req, res) => {
+    if (!batchPreviewFile || !fs.existsSync(batchPreviewFile.path)) {
+        return res.status(404).json({ error: 'No preview available. Run a preview first.' });
+    }
+    res.download(batchPreviewFile.path, batchPreviewFile.name);
+});
+
+app.post('/api/batches/upload', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (batchJob.state === 'running') {
+        return res.status(409).json({ error: 'A batch upload is already in progress' });
+    }
+    if (!req.file) {
+        return res.status(400).json({ error: 'No file received' });
+    }
+    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
+        return res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
+    }
+
+    let parsed;
+    try {
+        parsed = await parseBatchSheet(req.file.buffer, req.file.originalname);
+    } catch (err) {
+        return res.status(400).json({ error: `Could not read the file: ${err.message}` });
+    }
+
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        return res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+    }
+
+    if (parsed.rows.length === 0) {
+        return res.status(400).json({ error: 'The sheet has no batch rows' });
+    }
+
+    startBatchJob(parsed.rows, req.file.originalname);
+    res.json({ started: true, total: parsed.rows.length, ignoredColumns: parsed.ignoredColumns });
+});
+
+app.get('/api/batches/status', requireLogin, (req, res) => {
+    res.json({
+        state: batchJob.state,
+        startedAt: batchJob.startedAt,
+        finishedAt: batchJob.finishedAt,
+        fileName: batchJob.fileName,
+        processed: batchJob.processed,
+        total: batchJob.total,
+        created: batchJob.created,
+        failed: batchJob.failed,
+        error: batchJob.error,
+        resultReady: Boolean(batchJob.resultFile),
+        resultFileName: batchJob.resultFileName,
+        dbEnabled
+    });
+});
+
+app.get('/api/batches/result', requireLogin, (req, res) => {
+    if (!batchJob.resultFile || !fs.existsSync(batchJob.resultFile)) {
+        return res.status(404).json({ error: 'No result available. Run a batch upload first.' });
+    }
+    res.download(batchJob.resultFile, batchJob.resultFileName);
+});
+
 app.get('/health', (req, res) => res.json({ ok: true }));
+
+initSchema().catch(err => console.error('Database setup failed:', err.message));
 
 app.listen(PORT, () => {
     console.log(`NSDC student portal listening on port ${PORT}`);

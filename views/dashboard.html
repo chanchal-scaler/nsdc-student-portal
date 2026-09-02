@@ -59,7 +59,11 @@
   <div class="container">
     <div class="header">
       <h1>Student Data Download</h1>
-      <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
+      <div>
+        <a href="/upload" style="color:#2563eb;font-size:0.8125rem;text-decoration:none;margin-right:1rem;">Upload students</a>
+        <a href="/batches" style="color:#2563eb;font-size:0.8125rem;text-decoration:none;margin-right:1rem;">Create batches</a>
+        <form class="logout" method="POST" action="/logout" style="display:inline"><button type="submit">Sign out</button></form>
+      </div>
     </div>
     <div class="card">
       <p>Fetches the full student list from Skill India (NSDC) and prepares a CSV file for download. This can take several minutes depending on the number of students.</p>
