@@ -8,11 +8,12 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ENROLLMENT_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, findCandidateByEmail, findBatchByName, getEnrolledPairs, isEnabled as dbEnabled } from './lib/db.js';
+import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, findCandidateByEmail, findBatchByName, getEnrolledPairs, getCompletedPairs, isEnabled as dbEnabled } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -563,6 +564,162 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
     });
 }
 
+// ---- Assessment job state (one job at a time) ----
+const assessJob = {
+    state: 'idle', // idle | running | done | error
+    startedAt: null,
+    finishedAt: null,
+    fileName: null,
+    processed: 0,
+    total: 0,
+    completed: 0,
+    skipped: 0,
+    failed: 0,
+    error: null,
+    resultFile: null,
+    resultFileName: null
+};
+
+let assessPreviewFile = null;
+
+function resetAssessJob() {
+    for (const f of fs.readdirSync(DATA_DIR)) {
+        if ((f.startsWith('assess_result_') && f.endsWith('.csv')) ||
+            (f.startsWith('assess_payload_preview_') && f.endsWith('.json'))) {
+            try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
+        }
+    }
+    Object.assign(assessJob, {
+        state: 'idle', startedAt: null, finishedAt: null, fileName: null,
+        processed: 0, total: 0, completed: 0, skipped: 0, failed: 0,
+        error: null, resultFile: null, resultFileName: null
+    });
+}
+
+/**
+ * Resolves assessment rows the same way enrolment does, with one extra check:
+ * results can only be submitted for a student the portal has recorded as
+ * enrolled in that batch. Sending results for someone who was never enrolled
+ * would be rejected by NSDC anyway, and less legibly.
+ */
+async function resolveAssessmentRows(rows) {
+    const enrolledPairs = await getEnrolledPairs();
+    const completedPairs = await getCompletedPairs();
+    const groups = new Map();
+    const unresolved = [];
+    const skipped = [];
+
+    for (const row of rows) {
+        const candidate = await findCandidateByEmail(row.email);
+        if (!candidate) {
+            unresolved.push({ ...row, status: 'NOT_FOUND', error: 'No candidate ID stored for this email — upload the student first' });
+            continue;
+        }
+
+        const batch = await findBatchByName(row.batchName);
+        if (!batch) {
+            unresolved.push({ ...row, candidateId: candidate.candidate_id, status: 'NOT_FOUND', error: `No batch ID stored for "${row.batchName}" — create the batch first` });
+            continue;
+        }
+
+        const resolved = {
+            ...row,
+            candidateId: candidate.candidate_id,
+            batchId: batch.batch_id,
+            batchName: batch.batch_name
+        };
+        const pair = `${candidate.candidate_id}|${batch.batch_id}`;
+
+        if (completedPairs.has(pair)) {
+            skipped.push({ ...resolved, status: 'SKIPPED', error: 'Results already submitted for this batch' });
+            continue;
+        }
+
+        if (!enrolledPairs.has(pair)) {
+            unresolved.push({ ...resolved, status: 'NOT_ENROLLED', error: 'Not enrolled in this batch — enrol the student first' });
+            continue;
+        }
+
+        const key = String(batch.batch_id);
+        if (!groups.has(key)) {
+            groups.set(key, { batchId: batch.batch_id, batchName: batch.batch_name, rows: [] });
+        }
+        groups.get(key).rows.push(resolved);
+    }
+
+    return { groups: [...groups.values()], unresolved, skipped };
+}
+
+function writeAssessResultCsv(results) {
+    const headers = ['rowNumber', 'email', 'candidateId', 'batchName', 'batchId', 'result', 'status', 'error'];
+    const lines = [headers.join(',')];
+    const ordered = [...results].sort((a, b) => (a.rowNumber || 0) - (b.rowNumber || 0));
+    for (const result of ordered) {
+        lines.push(headers.map(h => csvCell(result[h])).join(','));
+    }
+
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `assess_result_${dateStr}.csv`;
+    const filePath = path.join(DATA_DIR, fileName);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+    return { filePath, fileName };
+}
+
+function startAssessJob({ groups, unresolved, skipped }, sourceFileName) {
+    resetAssessJob();
+
+    const total = groups.reduce((n, g) => n + g.rows.length, 0);
+
+    assessJob.state = 'running';
+    assessJob.startedAt = new Date().toISOString();
+    assessJob.fileName = sourceFileName;
+    assessJob.total = total;
+    assessJob.skipped = skipped.length;
+    assessJob.failed = unresolved.length;
+
+    submitAssessments({
+        userName: NSDC_USERNAME,
+        password: NSDC_PASSWORD,
+        groups,
+        onProgress: ({ processed, completed, failed }) => {
+            assessJob.processed = processed;
+            assessJob.completed = completed;
+            assessJob.failed = failed + unresolved.length;
+        }
+    }).then(async ({ results, completed, failed }) => {
+        const all = [...results, ...unresolved, ...skipped];
+        const { filePath, fileName } = writeAssessResultCsv(all);
+
+        for (const result of results) {
+            if (result.status !== 'COMPLETED') continue;
+            try {
+                await saveEnrollment({
+                    candidateId: result.candidateId,
+                    batchId: result.batchId,
+                    batchName: result.batchName,
+                    status: 'COMPLETED',
+                    sourceFile: sourceFileName
+                });
+            } catch (err) {
+                console.error(`Could not record completion for ${result.candidateId}:`, err.message);
+            }
+        }
+
+        assessJob.state = 'done';
+        assessJob.finishedAt = new Date().toISOString();
+        assessJob.completed = completed;
+        assessJob.failed = failed + unresolved.length;
+        assessJob.resultFile = filePath;
+        assessJob.resultFileName = fileName;
+        console.log(`Assessment complete: ${completed} submitted, ${skipped.length} skipped, ${failed + unresolved.length} failed`);
+    }).catch(err => {
+        assessJob.state = 'error';
+        assessJob.finishedAt = new Date().toISOString();
+        assessJob.error = err.message;
+        console.error('Assessment job failed:', err);
+    });
+}
+
 // ---- Routes ----
 app.get('/login', (req, res) => {
     if (req.session.loggedIn) return res.redirect('/');
@@ -1033,6 +1190,151 @@ app.get('/api/enroll/result', requireLogin, (req, res) => {
         return res.status(404).json({ error: 'No result available. Run an enrolment first.' });
     }
     res.download(enrollJob.resultFile, enrollJob.resultFileName);
+});
+
+app.get('/complete', requireLogin, (req, res) => {
+    if (assessJob.state !== 'running') {
+        resetAssessJob();
+    }
+    res.sendFile(path.join(__dirname, 'views', 'complete.html'));
+});
+
+app.get('/api/complete/template', requireLogin, (req, res) => {
+    const csv = ASSESSMENT_COLUMNS.join(',') + '\n' +
+        'rahul.sharma@example.com,Academy Jan26,1\n';
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="batch_completion_template.csv"');
+    res.send(csv);
+});
+
+async function readAssessmentUpload(req, res) {
+    if (!req.file) {
+        res.status(400).json({ error: 'No file received' });
+        return null;
+    }
+    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
+        res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
+        return null;
+    }
+
+    let parsed;
+    try {
+        parsed = await parseAssessmentSheet(req.file.buffer, req.file.originalname);
+    } catch (err) {
+        res.status(400).json({ error: `Could not read the file: ${err.message}` });
+        return null;
+    }
+
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+        return null;
+    }
+
+    if (parsed.rows.length === 0) {
+        res.status(400).json({ error: 'The sheet has no rows' });
+        return null;
+    }
+
+    return parsed;
+}
+
+app.post('/api/complete/preview', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    const parsed = await readAssessmentUpload(req, res);
+    if (!parsed) return;
+
+    const { groups, unresolved, skipped } = await resolveAssessmentRows(parsed.rows);
+
+    const payloads = groups.map(group => ({
+        batchName: group.batchName,
+        students: group.rows.length,
+        method: 'POST',
+        url: 'https://adminservices.skillindiadigital.gov.in/v1/candidates/candidate/pushBatchEachCandidate',
+        body: buildAssessmentPayload(group.batchId, group.rows)
+    }));
+
+    const fileName = `assess_payload_preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(payloads, null, 2), 'utf8');
+    assessPreviewFile = { path: path.join(DATA_DIR, fileName), name: fileName };
+
+    res.json({
+        total: groups.reduce((n, g) => n + g.rows.length, 0),
+        groups: groups.length,
+        skipped: skipped.length,
+        unresolved: unresolved.map(u => ({ row: u.rowNumber, email: u.email, error: u.error })).slice(0, 200),
+        unresolvedCount: unresolved.length,
+        payloads: payloads.slice(0, 5),
+        fileName
+    });
+});
+
+app.get('/api/complete/preview/file', requireLogin, (req, res) => {
+    if (!assessPreviewFile || !fs.existsSync(assessPreviewFile.path)) {
+        return res.status(404).json({ error: 'No preview available. Run a preview first.' });
+    }
+    res.download(assessPreviewFile.path, assessPreviewFile.name);
+});
+
+app.post('/api/complete/upload', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (assessJob.state === 'running') {
+        return res.status(409).json({ error: 'A submission is already in progress' });
+    }
+
+    const parsed = await readAssessmentUpload(req, res);
+    if (!parsed) return;
+
+    const resolved = await resolveAssessmentRows(parsed.rows);
+
+    if (resolved.groups.length === 0) {
+        return res.status(422).json({
+            headerErrors: [],
+            errors: resolved.unresolved.map(u => ({ row: u.rowNumber, message: u.error })),
+            errorCount: resolved.unresolved.length,
+            validRows: 0,
+            note: resolved.skipped.length > 0
+                ? `${resolved.skipped.length} row(s) already submitted; nothing left to send.`
+                : 'No row could be matched to an enrolled student.'
+        });
+    }
+
+    startAssessJob(resolved, req.file.originalname);
+    res.json({
+        started: true,
+        total: resolved.groups.reduce((n, g) => n + g.rows.length, 0),
+        groups: resolved.groups.length,
+        skipped: resolved.skipped.length,
+        unresolvedCount: resolved.unresolved.length
+    });
+});
+
+app.get('/api/complete/status', requireLogin, (req, res) => {
+    res.json({
+        state: assessJob.state,
+        startedAt: assessJob.startedAt,
+        finishedAt: assessJob.finishedAt,
+        fileName: assessJob.fileName,
+        processed: assessJob.processed,
+        total: assessJob.total,
+        completed: assessJob.completed,
+        skipped: assessJob.skipped,
+        failed: assessJob.failed,
+        error: assessJob.error,
+        resultReady: Boolean(assessJob.resultFile),
+        resultFileName: assessJob.resultFileName,
+        dbEnabled
+    });
+});
+
+app.get('/api/complete/result', requireLogin, (req, res) => {
+    if (!assessJob.resultFile || !fs.existsSync(assessJob.resultFile)) {
+        return res.status(404).json({ error: 'No result available. Run a submission first.' });
+    }
+    res.download(assessJob.resultFile, assessJob.resultFileName);
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));
