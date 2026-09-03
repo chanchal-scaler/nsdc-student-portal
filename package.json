@@ -5,7 +5,10 @@
   "type": "module",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "mock": "node tools/mock-nsdc-server.js",
+    "demo": "NSDC_BASE_URL=http://localhost:4000 NSDC_USERNAME=demo NSDC_PASSWORD=demo node server.js",
+    "demo:reset": "node tools/reset-demo.js"
   },
   "engines": {
     "node": ">=18"

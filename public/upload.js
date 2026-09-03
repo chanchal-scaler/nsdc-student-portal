@@ -7,6 +7,7 @@ const errorList = document.getElementById('errorList');
 const downloadRow = document.getElementById('downloadRow');
 const fileMeta = document.getElementById('fileMeta');
 const banner = document.getElementById('banner');
+const enrollmentSheet = document.getElementById('enrollmentSheet');
 const previewBtn = document.getElementById('previewBtn');
 const previewEl = document.getElementById('preview');
 const previewTitle = document.getElementById('previewTitle');
@@ -208,7 +209,34 @@ async function poll() {
       downloadRow.style.display = 'block';
       fileMeta.textContent = data.resultFileName + ' — finished ' + new Date(data.finishedAt).toLocaleString();
     }
+
+    if (data.enrollmentSheet) {
+      enrollmentSheet.style.display = 'block';
+      enrollmentSheet.textContent = '';
+
+      const link = document.createElement('a');
+      link.href = '/api/upload/enrollment-sheet';
+      link.textContent = 'Download enrolment sheet';
+      link.style.color = '#2563eb';
+      enrollmentSheet.appendChild(link);
+
+      const matched = data.enrollmentSheet.matched;
+      const rows = data.enrollmentSheet.rows;
+      let note = ' — ' + matched + ' of ' + rows + ' row(s) matched a batch';
+      if (matched < rows) note += '; the rest name a batch that has not been created yet';
+      enrollmentSheet.appendChild(document.createTextNode(note));
+    } else {
+      enrollmentSheet.style.display = 'none';
+    }
   } else if (data.state === 'error') {
+    // A run that stopped part way still did real work; say how much, so the
+    // sheet is not re-uploaded blind.
+    if (data.stoppedAfter) {
+      showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
+        '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');
+      if (data.resultReady) downloadRow.style.display = 'block';
+      return;
+    }
     showStatus('error', 'Upload failed: ' + (data.error || 'Unknown error'));
     if (data.resultReady) downloadRow.style.display = 'block';
   }

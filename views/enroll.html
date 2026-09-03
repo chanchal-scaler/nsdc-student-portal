@@ -12,7 +12,13 @@
     min-height: 100vh;
     padding: 1rem;
   }
-  .container { max-width: 720px; margin: 3rem auto; }
+  .container { max-width: 760px; margin: 3rem auto; }
+  .topnav { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 1.25rem;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.375rem; }
+  .topnav a { padding: 0.4rem 0.75rem; border-radius: 7px; font-size: 0.8125rem;
+    color: #4b5563; text-decoration: none; white-space: nowrap; }
+  .topnav a:hover { background: #f3f4f6; color: #111827; }
+  .topnav a.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
   h1 { font-size: 1.375rem; color: #111827; }
   .nav a { color: #2563eb; font-size: 0.8125rem; text-decoration: none; margin-right: 1rem; }
@@ -63,6 +69,11 @@
     padding: 0.75rem 0.75rem 0.75rem 1.75rem; background: #fef2f2; font-size: 0.8125rem; color: #7f1d1d; }
   .errors li { margin-bottom: 0.25rem; }
   .download-row { margin-top: 1.25rem; display: none; }
+  .pending { display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px;
+    padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
+  .pending h2 { font-size: 0.9375rem; color: #075985; margin-bottom: 0.25rem; }
+  .pending .meta { margin-bottom: 0.75rem; }
+  .pending-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
   .preview { margin-top: 1.25rem; display: none; }
   .preview h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.5rem; }
   .preview pre { max-height: 380px; overflow: auto; background: #111827; color: #e5e7eb;
@@ -79,18 +90,25 @@
 </head>
 <body>
   <div class="container">
+    <nav class="topnav"><a href="/">Download data</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll" class="active">Enrolment</a></nav>
     <div class="header">
-      <h1>Enrol Students in Batches</h1>
-      <div>
-        <span class="nav"><a href="/">Download student data</a><a href="/upload">Upload students</a><a href="/batches">Create batches</a><a href="/complete">Complete batches</a></span>
-        <form class="logout" method="POST" action="/logout" style="display:inline"><button type="submit">Sign out</button></form>
-      </div>
+      <h1>Enrol students in batches</h1>
+      <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
     </div>
 
     <div class="card">
       <div class="banner" id="banner"></div>
 
-      <p>Upload a sheet of students and the batch each one belongs to. Candidate and batch IDs are looked up from earlier uploads — the sheet only needs an email and a batch name.</p>
+      <div class="pending" id="pending">
+        <h2 id="pendingTitle">From the student sheets</h2>
+        <div class="meta" id="pendingNote"></div>
+        <div class="pending-actions">
+          <button class="btn btn-primary" id="pendingBtn">Enrol these now</button>
+          <a class="link-template" href="/api/upload/enrollment-sheet">Download the sheet instead</a>
+        </div>
+      </div>
+
+      <p>Or upload a sheet of students and the batch each one belongs to. Candidate and batch IDs are looked up from earlier uploads — the sheet only needs an email and a batch name.</p>
 
       <ul class="rules">
         <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB. Two columns: <code>email</code> and <code>batchName</code>.</li>
@@ -98,7 +116,7 @@
         <li>A student whose email has no stored candidate ID is reported, not sent — upload them on the Students page first.</li>
         <li>A batch name with no stored batch ID is reported too — create it on the Batches page first.</li>
         <li>Students already recorded as enrolled in that batch are skipped, so the same sheet can be run again safely.</li>
-        <li><strong>Preview payload only</strong> resolves the IDs and shows the exact JSON that would be sent — no request is made and nobody is enrolled.</li>
+        <li><strong>Preview payload only</strong> resolves the IDs and shows the exact JSON that would be sent — no request is made and nobody is enrolled. It also produces a mapping CSV listing what each email and batch name resolved to.</li>
       </ul>
 
       <div class="file-row">
@@ -123,6 +141,8 @@
       <div class="preview" id="preview">
         <h2 id="previewTitle">Payload preview</h2>
         <pre id="previewBody"></pre>
+        <a class="link-template" href="/api/enroll/mapping">Download mapping CSV</a>
+        &nbsp;·&nbsp;
         <a class="link-template" href="/api/enroll/preview/file" id="previewDownload">Download all payloads as JSON</a>
       </div>
     </div>

@@ -69,7 +69,14 @@ async function previewPayload() {
     return;
   }
 
-  showStatus('done', body.total + ' payload(s) built. Nothing was sent to NSDC.');
+  let summary = body.total + ' payload(s) built. Nothing was sent to NSDC.';
+  if (body.blockedCount) summary += ' ' + body.blockedCount + ' batch(es) will not be created.';
+  showStatus(body.blockedCount ? 'error' : 'done', summary);
+
+  if (body.blockedCount) {
+    showErrors('These batches will not be created', (body.blocked || [])
+      .map(b => 'Row ' + b.row + ' (' + b.batchName + '): ' + b.error));
+  }
   previewTitle.textContent = 'Payload preview — showing ' +
     Math.min(20, body.total) + ' of ' + body.total;
   previewBody.textContent = JSON.stringify(body.payloads, null, 2);
@@ -141,9 +148,16 @@ async function startUpload() {
     return;
   }
 
+  const notes = [];
   if (body.ignoredColumns && body.ignoredColumns.length > 0) {
+    notes.push('Ignored column(s): ' + body.ignoredColumns.join(', '));
+  }
+  if (body.blockedCount) {
+    notes.push(body.blockedCount + ' batch(es) not created — see the result CSV');
+  }
+  if (notes.length > 0) {
     banner.style.display = 'block';
-    banner.textContent = 'Ignored column(s): ' + body.ignoredColumns.join(', ');
+    banner.textContent = notes.join('. ') + '.';
   }
 
   poll();
@@ -203,6 +217,14 @@ async function poll() {
       fileMeta.textContent = data.resultFileName + ' — finished ' + new Date(data.finishedAt).toLocaleString();
     }
   } else if (data.state === 'error') {
+    // A run that stopped part way still did real work; say how much, so the
+    // sheet is not re-uploaded blind.
+    if (data.stoppedAfter) {
+      showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
+        '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');
+      if (data.resultReady) downloadRow.style.display = 'block';
+      return;
+    }
     showStatus('error', 'Upload failed: ' + (data.error || 'Unknown error'));
     if (data.resultReady) downloadRow.style.display = 'block';
   }

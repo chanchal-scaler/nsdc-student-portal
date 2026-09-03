@@ -2,7 +2,7 @@
  * A stand-in for the Skill India (NSDC) admin API, for testing only.
  *
  * It speaks the same endpoints the real service does — CSRF token, public key,
- * login, candidate registration, batch creation, enrolment and assessment — including RSA-OAEP password encryption
+ * login, candidate registration, batch creation and enrolment — including RSA-OAEP password encryption
  * and the "User Already Exist - CAN_…" duplicate response. Point the portal at
  * it and the entire upload path runs for real, except no candidate is created
  * anywhere outside this process.
@@ -197,40 +197,10 @@ app.post('/api/thirdparty/v1/enroll/Candidate', (req, res) => {
     res.json({ message: 'Candidates enrolled successfully', batchId, enrolled: fresh.length });
 });
 
-const completions = [];
-
-app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
-    if (!req.get('Authorization')) {
-        return res.status(401).json({ message: 'Missing Authorization header' });
-    }
-    if (!req.get('X-Csrf-Token')) {
-        return res.status(412).json({ message: 'CSRF token missing' });
-    }
-
-    const { batchId, candidates } = req.body || {};
-    if (!batchId || !Array.isArray(candidates) || candidates.length === 0) {
-        return res.status(400).json({ message: 'batchId and a non-empty candidates array are required' });
-    }
-
-    for (const candidate of candidates) {
-        if (!candidate.candidateID) {
-            return res.status(400).json({ message: 'Each candidate needs a candidateID' });
-        }
-        if (!candidate.assessmentDetails || !candidate.certificationDetails) {
-            return res.status(400).json({ message: `Missing assessment or certification details for ${candidate.candidateID}` });
-        }
-        completions.push({ batchId, candidateId: candidate.candidateID, body: candidate });
-    }
-
-    log(`batch ${batchId}: results submitted for ${candidates.length} candidate(s)`);
-    res.json({ message: 'Assessment data uploaded successfully', batchId, processed: candidates.length });
-});
-
 // Test helpers, not part of the real API
 app.get('/_mock/registrations', (_req, res) => res.json(registrations));
 app.get('/_mock/batches', (_req, res) => res.json(createdBatches));
 app.get('/_mock/enrolments', (_req, res) => res.json(enrolments));
-app.get('/_mock/completions', (_req, res) => res.json(completions));
 app.post('/_mock/reset', (_req, res) => {
     candidatesByEmail.clear();
     registrations.length = 0;
@@ -238,7 +208,6 @@ app.post('/_mock/reset', (_req, res) => {
     createdBatches.length = 0;
     enrolledPairs.clear();
     enrolments.length = 0;
-    completions.length = 0;
     res.json({ ok: true });
 });
 

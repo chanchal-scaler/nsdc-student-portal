@@ -11,10 +11,78 @@ const previewBtn = document.getElementById('previewBtn');
 const previewEl = document.getElementById('preview');
 const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
+const pendingEl = document.getElementById('pending');
+const pendingTitle = document.getElementById('pendingTitle');
+const pendingNote = document.getElementById('pendingNote');
+const pendingBtn = document.getElementById('pendingBtn');
 let pollTimer = null;
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
+pendingBtn.addEventListener('click', enrolPending);
+
+// Whatever the student sheets asked for and has not been enrolled yet. Batch
+// IDs are resolved when this loads, so uploading batches later is enough.
+async function loadPending() {
+  let data;
+  try {
+    const res = await fetch('/api/enroll/pending');
+    if (res.status === 401) return location.href = '/login';
+    data = await res.json();
+  } catch {
+    return;
+  }
+
+  if (!data.total) {
+    pendingEl.style.display = 'none';
+    return;
+  }
+
+  pendingEl.style.display = 'block';
+  pendingTitle.textContent = 'From the student sheets — ' + data.total + ' student(s) waiting';
+
+  pendingNote.textContent = '';
+  pendingNote.appendChild(document.createTextNode(data.ready + ' ready to enrol.'));
+
+  if (data.waiting.length > 0) {
+    const names = [...new Set(data.waiting.map(w => w.batchName))];
+    pendingNote.appendChild(document.createElement('br'));
+    pendingNote.appendChild(document.createTextNode(
+      data.waiting.length + ' waiting for a batch that does not exist yet: ' + names.join(', ')
+    ));
+  }
+
+  pendingBtn.disabled = data.ready === 0;
+}
+
+async function enrolPending() {
+  pendingBtn.disabled = true;
+  clearErrors();
+  previewEl.style.display = 'none';
+  downloadRow.style.display = 'none';
+  showStatus('running', 'Enrolling…');
+
+  let res;
+  try {
+    res = await fetch('/api/enroll/pending', { method: 'POST' });
+  } catch (err) {
+    showStatus('error', 'Enrolment failed: ' + err.message);
+    pendingBtn.disabled = false;
+    return;
+  }
+
+  if (res.status === 401) return location.href = '/login';
+  const body = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const count = res.status === 422 ? showValidationErrors(body) : 0;
+    showStatus('error', body.note || body.error || (count + ' problem(s) found'));
+    pendingBtn.disabled = false;
+    return;
+  }
+
+  poll();
+}
 
 function showValidationErrors(body) {
   const messages = [];
@@ -204,6 +272,8 @@ async function poll() {
 
   uploadBtn.disabled = false;
 
+  loadPending();
+
   if (data.state === 'done') {
     let message = 'Done — ' + data.enrolled + ' enrolled, ' + data.alreadyEnrolled +
       ' already in batch, ' + data.skipped + ' skipped, ' + data.failed + ' failed.';
@@ -215,10 +285,19 @@ async function poll() {
       fileMeta.textContent = data.resultFileName + ' — finished ' + new Date(data.finishedAt).toLocaleString();
     }
   } else if (data.state === 'error') {
+    // A run that stopped part way still did real work; say how much, so the
+    // sheet is not re-uploaded blind.
+    if (data.stoppedAfter) {
+      showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
+        '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');
+      if (data.resultReady) downloadRow.style.display = 'block';
+      return;
+    }
     showStatus('error', 'Upload failed: ' + (data.error || 'Unknown error'));
     if (data.resultReady) downloadRow.style.display = 'block';
   }
 }
 
-// On page load, pick up any in-progress or completed upload
+// On page load, pick up any in-progress or completed enrolment
 poll();
+loadPending();
