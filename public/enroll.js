@@ -287,6 +287,16 @@ async function poll() {
   } else if (data.state === 'error') {
     // A run that stopped part way still did real work; say how much, so the
     // sheet is not re-uploaded blind.
+    if (data.serviceDown) {
+      const done = data.stoppedAfter
+        ? data.stoppedAfter + ' of ' + data.total + ' went through before it stopped. '
+        : 'Nothing was sent. ';
+      showStatus('error', 'Skill India (NSDC) is not responding. ' + done +
+        'Try again once it is back — re-uploading the same sheet picks up where this left off.');
+      if (data.resultReady) downloadRow.style.display = 'block';
+      return;
+    }
+
     if (data.stoppedAfter) {
       showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
         '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');

@@ -11,10 +11,62 @@ const previewBtn = document.getElementById('previewBtn');
 const previewEl = document.getElementById('preview');
 const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
+const importInput = document.getElementById('importInput');
+const importBtn = document.getElementById('importBtn');
+const importResult = document.getElementById('importResult');
 let pollTimer = null;
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
+importBtn.addEventListener('click', importExistingBatches);
+
+// Records batch IDs made outside the portal. No NSDC call is involved.
+async function importExistingBatches() {
+  const file = importInput.files && importInput.files[0];
+  if (!file) {
+    importResult.textContent = 'Choose a .csv or .xlsx file with batchName and batchId first.';
+    return;
+  }
+
+  importBtn.disabled = true;
+  clearErrors();
+  importResult.textContent = 'Recording…';
+
+  const form = new FormData();
+  form.append('sheet', file);
+
+  let res;
+  try {
+    res = await fetch('/api/batches/import', { method: 'POST', body: form });
+  } catch (err) {
+    importResult.textContent = 'Could not record: ' + err.message;
+    importBtn.disabled = false;
+    return;
+  }
+
+  if (res.status === 401) return location.href = '/login';
+
+  const body = await res.json().catch(() => ({}));
+  importBtn.disabled = false;
+
+  if (res.status === 422) {
+    const count = showValidationErrors(body);
+    importResult.textContent = 'Sheet rejected — ' + count + ' problem(s). Nothing was recorded.';
+    return;
+  }
+
+  if (!res.ok) {
+    importResult.textContent = body.error || 'Could not record these batches';
+    return;
+  }
+
+  let message = body.recorded + ' batch(es) recorded. Enrolment can use them now.';
+  if (body.failures && body.failures.length > 0) {
+    message += ' ' + body.failures.length + ' could not be recorded.';
+    showErrors('Not recorded', body.failures.map(f => 'Row ' + f.row + ': ' + f.message));
+  }
+  importResult.textContent = message;
+}
 
 function showValidationErrors(body) {
   const messages = [];
@@ -219,6 +271,16 @@ async function poll() {
   } else if (data.state === 'error') {
     // A run that stopped part way still did real work; say how much, so the
     // sheet is not re-uploaded blind.
+    if (data.serviceDown) {
+      const done = data.stoppedAfter
+        ? data.stoppedAfter + ' of ' + data.total + ' went through before it stopped. '
+        : 'Nothing was sent. ';
+      showStatus('error', 'Skill India (NSDC) is not responding. ' + done +
+        'Try again once it is back — re-uploading the same sheet picks up where this left off.');
+      if (data.resultReady) downloadRow.style.display = 'block';
+      return;
+    }
+
     if (data.stoppedAfter) {
       showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
         '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');
