@@ -104,7 +104,7 @@
         <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB.</li>
         <li>Required columns: <code>namePrefix</code>, <code>name</code>, <code>dob</code>, <code>guardianName</code>, <code>email</code>, <code>phone</code>, <code>countryCode</code>, <code>Batch Name</code>. Common spellings such as "Student Name", "Mobile" or "Course" are recognised automatically.</li>
         <li><code>phone</code> must be 10 digits and <code>countryCode</code> just the digits (<code>91</code>). A row where the two are the wrong way round is rejected — 512 candidates on NSDC have "91" as their phone number from a sheet where that happened.</li>
-        <li><code>Batch Name</code> must match a batch exactly. It does not have to exist yet — a batch created afterwards fills itself in.</li>
+        <li><code>Batch Name</code> must read as &lt;Programme&gt; &lt;Mon&gt;&lt;YY&gt; — <code>Academy Sep26</code>, <code>DSML Jan27</code> — and match the batch exactly. The batch does not have to exist yet; one created afterwards fills itself in.</li>
         <li>Gender is taken from <code>namePrefix</code> (Mr. → male, anything else → female), matching how NSDC records were created until now.</li>
         <li><strong>Preview payload only</strong> validates the sheet and shows the exact JSON that would be sent to NSDC — no request is made and no candidate is created.</li>
         <li>Nothing is sent to NSDC until every row passes validation.</li>

@@ -11,6 +11,10 @@
  *   NSDC_BASE_URL=http://localhost:4000 NSDC_USERNAME=TP155158 NSDC_PASSWORD=test node server.js
  *
  * Any username/password is accepted, so no real credentials are needed.
+ *
+ * /_mock/down makes every NSDC endpoint answer 503, and /_mock/up undoes it —
+ * an outage to rehearse against without stopping the process. Both work from a
+ * browser address bar.
  */
 import express from 'express';
 import crypto from 'crypto';
@@ -24,6 +28,16 @@ const publicKeyPem = forge.pki.publicKeyToPem(keypair.publicKey);
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
+
+// Switched on to rehearse an NSDC outage without killing this process, so the
+// portal can be watched reacting to one and recovering from it.
+let serviceDown = false;
+
+app.use((req, res, next) => {
+    if (!serviceDown || req.path.startsWith('/_mock')) return next();
+    log(`down: refused ${req.method} ${req.path}`);
+    res.status(503).json({ message: 'Service Unavailable' });
+});
 
 // candidateId lookup keyed by email, so re-uploading a student behaves the way
 // NSDC does: no second record, the existing ID comes back in an error message.
@@ -198,10 +212,28 @@ app.post('/api/thirdparty/v1/enroll/Candidate', (req, res) => {
 });
 
 // Test helpers, not part of the real API
+// GET as well as POST, so an outage can be switched on from the address bar
+app.all('/_mock/down', (_req, res) => {
+    serviceDown = true;
+    log('down: every NSDC endpoint now answers 503');
+    res.json({ serviceDown });
+});
+app.all('/_mock/up', (_req, res) => {
+    serviceDown = false;
+    log('up: answering normally again');
+    res.json({ serviceDown });
+});
+app.get('/_mock/state', (_req, res) => res.json({
+    serviceDown,
+    candidates: registrations.length,
+    batches: createdBatches.length,
+    enrolments: enrolments.length
+}));
+
 app.get('/_mock/registrations', (_req, res) => res.json(registrations));
 app.get('/_mock/batches', (_req, res) => res.json(createdBatches));
 app.get('/_mock/enrolments', (_req, res) => res.json(enrolments));
-app.post('/_mock/reset', (_req, res) => {
+app.all('/_mock/reset', (_req, res) => {
     candidatesByEmail.clear();
     registrations.length = 0;
     batchesByName.clear();

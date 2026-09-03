@@ -13,6 +13,7 @@ import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
+import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
