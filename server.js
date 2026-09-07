@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseBatchImportSheet, parseEnrollmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, BATCH_IMPORT_COLUMNS, ENROLLMENT_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ENROLLMENT_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
@@ -1294,71 +1294,6 @@ app.get('/api/enroll/result', requireLogin, (req, res) => {
         return res.status(404).json({ error: 'No result available. Run an enrolment first.' });
     }
     res.download(enrollJob.resultFile, enrollJob.resultFileName);
-});
-
-app.get('/api/batches/import/template', requireLogin, (req, res) => {
-    const csv = BATCH_IMPORT_COLUMNS.join(',') + '\n' + 'Academy Apr26,3931424\n';
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="existing_batches_template.csv"');
-    res.send(csv);
-});
-
-/**
- * Records batches that already exist on NSDC, without calling NSDC at all.
- * Nothing is created — these IDs came from batches made elsewhere, and the
- * portal only needs to know them so enrolment can resolve the names.
- */
-app.post('/api/batches/import', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'No file received' });
-    }
-    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
-        return res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
-    }
-
-    let parsed;
-    try {
-        parsed = await parseBatchImportSheet(req.file.buffer, req.file.originalname);
-    } catch (err) {
-        return res.status(400).json({ error: `Could not read the file: ${err.message}` });
-    }
-
-    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
-        return res.status(422).json({
-            headerErrors: parsed.headerErrors,
-            errors: parsed.errors.slice(0, 200),
-            errorCount: parsed.errors.length,
-            validRows: parsed.rows.length,
-            ignoredColumns: parsed.ignoredColumns
-        });
-    }
-
-    if (parsed.rows.length === 0) {
-        return res.status(400).json({ error: 'The sheet has no batch rows' });
-    }
-
-    if (!dbEnabled) {
-        return res.status(503).json({ error: 'DATABASE_URL is not set, so there is nowhere to record these batches' });
-    }
-
-    let recorded = 0;
-    const failures = [];
-
-    for (const row of parsed.rows) {
-        try {
-            await saveBatch({ batchId: row.batchId, batchName: row.batchName, sourceFile: req.file.originalname });
-            recorded++;
-        } catch (err) {
-            failures.push({ row: row.rowNumber, message: `${row.batchName}: ${err.message}` });
-        }
-    }
-
-    res.json({
-        recorded,
-        failures,
-        total: parsed.rows.length,
-        ignoredColumns: parsed.ignoredColumns
-    });
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));
