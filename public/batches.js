@@ -13,8 +13,32 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
+const reloadHistory = renderHistory({
+  endpoint: '/api/history/batches',
+  countLabel: 'batch(es) created through the portal',
+  columns: [
+    { label: 'Batch ID', value: r => r.batch_id },
+    { label: 'Name',     value: r => r.batch_name },
+    { label: 'Students', value: r => r.students },
+    { label: 'From',     value: r => r.source_file || '' },
+    { label: 'When',     value: r => whenText(r.created_at) }
+  ]
+});
+
+
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
+
+function showValidationErrors(body) {
+  const messages = [];
+  for (const headerError of body.headerErrors || []) messages.push(headerError);
+  for (const error of body.errors || []) messages.push('Row ' + error.row + ': ' + error.message);
+  if (body.errorCount > (body.errors || []).length) {
+    messages.push('… and ' + (body.errorCount - body.errors.length) + ' more');
+  }
+  showErrors('Fix these and try again', messages);
+  return body.errorCount || messages.length;
+}
 
 // All dynamic values are rendered via textContent / DOM nodes, never innerHTML
 function showStatus(cls, text) {
@@ -151,6 +175,8 @@ async function poll() {
 
   uploadBtn.disabled = false;
 
+  reloadHistory();
+
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' created, ' + data.failed + ' failed.';
     if (!data.dbEnabled) message += ' (Not stored in the database: DATABASE_URL is not set.)';
@@ -164,14 +190,14 @@ async function poll() {
     // A run that stopped part way still did real work; say how much, so the
     // sheet is not re-uploaded blind.
     if (data.serviceDown) {
-      showStatus('error', 'Skill India (NSDC) is not responding. ' + howFar(data) +
+      showStatus('error', 'The last run: Skill India (NSDC) was not responding. ' + howFar(data) +
         ' Try again once it is back — re-uploading the same sheet picks up where this left off, so nothing is sent twice.');
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
 
     if (data.stoppedAfter !== null) {
-      showStatus('error', 'The run stopped early. ' + howFar(data) +
+      showStatus('error', 'The last run stopped early. ' + howFar(data) +
         ' Re-uploading the same sheet picks up where this left off.');
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
@@ -183,3 +209,11 @@ async function poll() {
 
 // On page load, pick up any in-progress or completed upload
 poll();
+
+// A handler that throws used to leave the page sitting on "Checking the
+// sheet…" with no way to tell whether anything had happened.
+window.addEventListener('unhandledrejection', event => {
+  console.error(event.reason);
+  showStatus('error', 'Upload could not be completed: ' + (event.reason && event.reason.message || event.reason) +
+    '. Nothing was sent — reload the page and try again.');
+});

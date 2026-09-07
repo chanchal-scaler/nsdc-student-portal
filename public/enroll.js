@@ -11,6 +11,20 @@ const pendingNote = document.getElementById('pendingNote');
 const pendingBtn = document.getElementById('pendingBtn');
 let pollTimer = null;
 
+const reloadHistory = renderHistory({
+  endpoint: '/api/history/enrollments',
+  countLabel: 'student(s) enrolled through the portal',
+  columns: [
+    { label: 'Candidate ID', value: r => r.candidate_id },
+    { label: 'Email',        value: r => r.email || '' },
+    { label: 'Batch',        value: r => r.batch_name || '' },
+    { label: 'Batch ID',     value: r => r.batch_id },
+    { label: 'Status',       value: r => r.status === 'COMPLETED' ? 'Enrolled, results in' : 'Enrolled' },
+    { label: 'When',         value: r => whenText(r.enrolled_at) }
+  ]
+});
+
+
 pendingBtn.addEventListener('click', enrolPending);
 
 // Whatever the student sheets asked for and has not been enrolled yet. Batch
@@ -164,6 +178,8 @@ async function poll() {
 
   loadPending();
 
+  reloadHistory();
+
   if (data.state === 'done') {
     let message = 'Done — ' + data.enrolled + ' enrolled, ' + data.alreadyEnrolled +
       ' already in batch, ' + data.skipped + ' skipped, ' + data.failed + ' failed.';
@@ -178,14 +194,14 @@ async function poll() {
     // A run that stopped part way still did real work; say how much, so it is
     // clear what is left rather than looking like nothing happened.
     if (data.serviceDown) {
-      showStatus('error', 'Skill India (NSDC) is not responding. ' + howFar(data) +
+      showStatus('error', 'The last run: Skill India (NSDC) was not responding. ' + howFar(data) +
         ' Try again once it is back.');
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
 
     if (data.stoppedAfter !== null) {
-      showStatus('error', 'The run stopped early. ' + howFar(data));
+      showStatus('error', 'The last run stopped early. ' + howFar(data));
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
@@ -197,3 +213,11 @@ async function poll() {
 // On page load, pick up any in-progress or completed enrolment
 poll();
 loadPending();
+
+// A handler that throws used to leave the page sitting on "Checking the
+// sheet…" with no way to tell whether anything had happened.
+window.addEventListener('unhandledrejection', event => {
+  console.error(event.reason);
+  showStatus('error', 'Enrolment could not be completed: ' + (event.reason && event.reason.message || event.reason) +
+    '. Nothing was sent — reload the page and try again.');
+});
