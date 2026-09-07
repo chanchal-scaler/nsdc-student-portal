@@ -8,10 +8,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ENROLLMENT_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
-import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
+import { enrollCandidates } from './lib/nsdc-enrollments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
@@ -548,14 +548,10 @@ const enrollJob = {
     resultFileName: null
 };
 
-let enrollPreviewFile = null;
-let enrollMappingFile = null;
 
 function resetEnrollJob() {
     for (const f of fs.readdirSync(DATA_DIR)) {
-        if ((f.startsWith('enroll_result_') && f.endsWith('.csv')) ||
-            (f.startsWith('enroll_mapping_') && f.endsWith('.csv')) ||
-            (f.startsWith('enroll_payload_preview_') && f.endsWith('.json'))) {
+        if (f.startsWith('enroll_result_') && f.endsWith('.csv')) {
             try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
         }
     }
@@ -1128,144 +1124,27 @@ app.post('/api/enroll/pending', requireLogin, async (req, res) => {
     res.json({ started: true, total: ready.length, groups: groups.size, skipped: 0, unresolvedCount: unresolved.length });
 });
 
-app.get('/api/enroll/template', requireLogin, (req, res) => {
-    const csv = ENROLLMENT_COLUMNS.join(',') + '\n' +
-        'rahul.sharma@example.com,Academy Jan26\n';
+/**
+ * The pending list as a CSV: what each email and batch name resolved to, and
+ * why a row did not. Offered so the resolution can be checked before anyone is
+ * enrolled, which is what a preview of the sheet used to be for.
+ */
+app.get('/api/enroll/mapping', requireLogin, async (req, res) => {
+    const pending = await getPendingEnrollments();
+
+    const headers = ['email', 'candidateId', 'batchName', 'batchId', 'note'];
+    const lines = [headers.join(',')];
+    for (const row of pending) {
+        lines.push(headers.map(h => csvCell(
+            h === 'note'
+                ? (row.batchId === '' ? 'No batch of this name has been created yet' : '')
+                : row[h]
+        )).join(','));
+    }
+
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename="enrollment_template.csv"');
-    res.send(csv);
-});
-
-async function readEnrollmentUpload(req, res) {
-    if (!req.file) {
-        res.status(400).json({ error: 'No file received' });
-        return null;
-    }
-    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
-        res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
-        return null;
-    }
-
-    let parsed;
-    try {
-        parsed = await parseEnrollmentSheet(req.file.buffer, req.file.originalname);
-    } catch (err) {
-        res.status(400).json({ error: `Could not read the file: ${err.message}` });
-        return null;
-    }
-
-    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
-        res.status(422).json({
-            headerErrors: parsed.headerErrors,
-            errors: parsed.errors.slice(0, 200),
-            errorCount: parsed.errors.length,
-            validRows: parsed.rows.length,
-            ignoredColumns: parsed.ignoredColumns
-        });
-        return null;
-    }
-
-    if (parsed.rows.length === 0) {
-        res.status(400).json({ error: 'The sheet has no rows' });
-        return null;
-    }
-
-    return parsed;
-}
-
-app.post('/api/enroll/preview', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
-    const parsed = await readEnrollmentUpload(req, res);
-    if (!parsed) return;
-
-    const { groups, unresolved, skipped } = await resolveEnrollmentRows(parsed.rows);
-
-    const payloads = groups.map(group => ({
-        batchName: group.batchName,
-        students: group.rows.length,
-        method: 'POST',
-        url: 'https://adminservices.skillindiadigital.gov.in/api/thirdparty/v1/enroll/Candidate',
-        body: buildEnrollmentPayload(group.batchId, group.rows.map(r => r.candidateId))
-    }));
-
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-
-    const fileName = `enroll_payload_preview_${stamp}.json`;
-    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(payloads, null, 2), 'utf8');
-    enrollPreviewFile = { path: path.join(DATA_DIR, fileName), name: fileName };
-
-    // The same resolution as a CSV: what each email and batch name turned into.
-    // This is the sheet that used to be assembled by hand before a run.
-    const mappingHeaders = ['rowNumber', 'email', 'candidateId', 'batchName', 'batchId', 'status', 'note'];
-    const mappingRows = [
-        ...groups.flatMap(group => group.rows.map(row => ({ ...row, status: 'READY', note: '' }))),
-        ...skipped.map(row => ({ ...row, note: row.error })),
-        ...unresolved.map(row => ({ ...row, note: row.error }))
-    ].sort((a, b) => (a.rowNumber || 0) - (b.rowNumber || 0));
-
-    const mappingName = `enroll_mapping_${stamp}.csv`;
-    fs.writeFileSync(
-        path.join(DATA_DIR, mappingName),
-        [mappingHeaders.join(','), ...mappingRows.map(r => mappingHeaders.map(h => csvCell(r[h])).join(','))].join('\n') + '\n',
-        'utf8'
-    );
-    enrollMappingFile = { path: path.join(DATA_DIR, mappingName), name: mappingName };
-
-    res.json({
-        total: groups.reduce((n, g) => n + g.rows.length, 0),
-        groups: groups.length,
-        skipped: skipped.length,
-        unresolved: unresolved.map(u => ({ row: u.rowNumber, email: u.email, error: u.error })).slice(0, 200),
-        unresolvedCount: unresolved.length,
-        payloads: payloads.slice(0, 20),
-        fileName,
-        mappingFile: mappingName
-    });
-});
-
-app.get('/api/enroll/mapping', requireLogin, (req, res) => {
-    if (!enrollMappingFile || !fs.existsSync(enrollMappingFile.path)) {
-        return res.status(404).json({ error: 'No mapping available. Run a preview first.' });
-    }
-    res.download(enrollMappingFile.path, enrollMappingFile.name);
-});
-
-app.get('/api/enroll/preview/file', requireLogin, (req, res) => {
-    if (!enrollPreviewFile || !fs.existsSync(enrollPreviewFile.path)) {
-        return res.status(404).json({ error: 'No preview available. Run a preview first.' });
-    }
-    res.download(enrollPreviewFile.path, enrollPreviewFile.name);
-});
-
-app.post('/api/enroll/upload', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
-    if (enrollJob.state === 'running') {
-        return res.status(409).json({ error: 'An enrolment is already in progress' });
-    }
-
-    const parsed = await readEnrollmentUpload(req, res);
-    if (!parsed) return;
-
-    const resolved = await resolveEnrollmentRows(parsed.rows);
-
-    if (resolved.groups.length === 0) {
-        return res.status(422).json({
-            headerErrors: [],
-            errors: resolved.unresolved.map(u => ({ row: u.rowNumber, message: u.error })),
-            errorCount: resolved.unresolved.length,
-            validRows: 0,
-            note: resolved.skipped.length > 0
-                ? `${resolved.skipped.length} row(s) are already enrolled; nothing left to send.`
-                : 'No row could be matched to a stored candidate and batch.'
-        });
-    }
-
-    startEnrollJob(resolved, req.file.originalname);
-    res.json({
-        started: true,
-        total: resolved.groups.reduce((n, g) => n + g.rows.length, 0),
-        groups: resolved.groups.length,
-        skipped: resolved.skipped.length,
-        unresolvedCount: resolved.unresolved.length
-    });
+    res.setHeader('Content-Disposition', `attachment; filename="enrolment_mapping_${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(lines.join('\n') + '\n');
 });
 
 app.get('/api/enroll/status', requireLogin, (req, res) => {

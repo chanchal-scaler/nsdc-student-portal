@@ -43,8 +43,6 @@
     border-radius: 8px; padding: 0.875rem 1rem 0.875rem 2rem; margin-bottom: 1.25rem; }
   .rules li { margin-bottom: 0.25rem; }
   .rules code { background: #eef2ff; padding: 0 0.25rem; border-radius: 4px; }
-  .file-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
-  input[type="file"] { font-size: 0.875rem; }
   .btn {
     padding: 0.6875rem 1.5rem; border: none; border-radius: 8px;
     font-size: 0.9375rem; font-weight: 600; cursor: pointer;
@@ -74,9 +72,6 @@
   .pending h2 { font-size: 0.9375rem; color: #075985; margin-bottom: 0.25rem; }
   .pending .meta { margin-bottom: 0.75rem; }
   .pending-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
-  .preview { margin-top: 1.25rem; display: none; }
-  .preview h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.5rem; }
-  .preview pre { max-height: 380px; overflow: auto; background: #111827; color: #e5e7eb;
     border-radius: 8px; padding: 0.875rem; font-size: 0.75rem; line-height: 1.5; margin-bottom: 0.5rem; }
   .meta { font-size: 0.8125rem; color: #6b7280; margin-top: 0.5rem; }
   .spinner {
@@ -90,7 +85,7 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll" class="active">Enrolment</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll" class="active">Enrolment</a><a href="/complete">Completion</a></nav>
     <div class="header">
       <h1>Enrol students in batches</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
@@ -99,37 +94,21 @@
     <div class="card">
       <div class="banner" id="banner"></div>
 
+      <p>Students whose sheet named a batch are enrolled here. Candidate and batch IDs come from what the Students and Batches pages stored, so there is nothing to fill in — a student waits until the batch they name exists, and one already enrolled is not enrolled again.</p>
+
       <div class="pending" id="pending">
         <h2 id="pendingTitle">From the student sheets</h2>
         <div class="meta" id="pendingNote"></div>
         <div class="pending-actions">
           <button class="btn btn-primary" id="pendingBtn">Enrol these now</button>
-          <a class="link-template" href="/api/upload/enrollment-sheet">Download the sheet instead</a>
+          <a class="link-template" href="/api/enroll/mapping">Download the list instead</a>
         </div>
-      </div>
-
-      <p>Or upload a sheet of students and the batch each one belongs to. Candidate and batch IDs are looked up from earlier uploads — the sheet only needs an email and a batch name.</p>
-
-      <ul class="rules">
-        <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB. Two columns: <code>email</code> and <code>batchName</code>.</li>
-        <li>Every student going into the same batch is enrolled in one request, the way the existing script does it.</li>
-        <li>A student whose email has no stored candidate ID is reported, not sent — upload them on the Students page first.</li>
-        <li>A batch name with no stored batch ID is reported too — create it on the Batches page first.</li>
-        <li>Students already recorded as enrolled in that batch are skipped, so the same sheet can be run again safely.</li>
-        <li><strong>Preview payload only</strong> resolves the IDs and shows the exact JSON that would be sent — no request is made and nobody is enrolled. It also produces a mapping CSV listing what each email and batch name resolved to.</li>
-      </ul>
-
-      <div class="file-row">
-        <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
-        <button class="btn btn-secondary" id="previewBtn">Preview payload only</button>
-        <button class="btn btn-primary" id="uploadBtn">Enrol students</button>
-        <a class="link-template" href="/api/enroll/template">Download template</a>
       </div>
 
       <div class="status" id="status"></div>
 
       <div class="errors" id="errors">
-        <h2 id="errorsTitle">Sheet not uploaded</h2>
+        <h2 id="errorsTitle">Not enrolled</h2>
         <ul id="errorList"></ul>
       </div>
 
@@ -138,13 +117,6 @@
         <div class="meta" id="fileMeta"></div>
       </div>
 
-      <div class="preview" id="preview">
-        <h2 id="previewTitle">Payload preview</h2>
-        <pre id="previewBody"></pre>
-        <a class="link-template" href="/api/enroll/mapping">Download mapping CSV</a>
-        &nbsp;·&nbsp;
-        <a class="link-template" href="/api/enroll/preview/file" id="previewDownload">Download all payloads as JSON</a>
-      </div>
     </div>
   </div>
 

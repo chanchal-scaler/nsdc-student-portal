@@ -1,5 +1,3 @@
-const fileInput = document.getElementById('fileInput');
-const uploadBtn = document.getElementById('uploadBtn');
 const statusEl = document.getElementById('status');
 const errorsEl = document.getElementById('errors');
 const errorsTitle = document.getElementById('errorsTitle');
@@ -7,18 +5,12 @@ const errorList = document.getElementById('errorList');
 const downloadRow = document.getElementById('downloadRow');
 const fileMeta = document.getElementById('fileMeta');
 const banner = document.getElementById('banner');
-const previewBtn = document.getElementById('previewBtn');
-const previewEl = document.getElementById('preview');
-const previewTitle = document.getElementById('previewTitle');
-const previewBody = document.getElementById('previewBody');
 const pendingEl = document.getElementById('pending');
 const pendingTitle = document.getElementById('pendingTitle');
 const pendingNote = document.getElementById('pendingNote');
 const pendingBtn = document.getElementById('pendingBtn');
 let pollTimer = null;
 
-uploadBtn.addEventListener('click', startUpload);
-previewBtn.addEventListener('click', previewPayload);
 pendingBtn.addEventListener('click', enrolPending);
 
 // Whatever the student sheets asked for and has not been enrolled yet. Batch
@@ -58,7 +50,6 @@ async function loadPending() {
 async function enrolPending() {
   pendingBtn.disabled = true;
   clearErrors();
-  previewEl.style.display = 'none';
   downloadRow.style.display = 'none';
   showStatus('running', 'Enrolling…');
 
@@ -95,63 +86,6 @@ function showValidationErrors(body) {
   return body.errorCount || messages.length;
 }
 
-// Builds the request bodies and shows them without contacting NSDC at all
-async function previewPayload() {
-  const file = fileInput.files && fileInput.files[0];
-  if (!file) {
-    showStatus('error', 'Choose a .csv or .xlsx file first.');
-    return;
-  }
-
-  previewBtn.disabled = true;
-  clearErrors();
-  previewEl.style.display = 'none';
-  downloadRow.style.display = 'none';
-  showStatus('running', 'Building payloads…');
-
-  const form = new FormData();
-  form.append('sheet', file);
-
-  let res;
-  try {
-    res = await fetch('/api/enroll/preview', { method: 'POST', body: form });
-  } catch (err) {
-    showStatus('error', 'Preview failed: ' + err.message);
-    previewBtn.disabled = false;
-    return;
-  }
-
-  if (res.status === 401) return location.href = '/login';
-
-  const body = await res.json().catch(() => ({}));
-  previewBtn.disabled = false;
-
-  if (res.status === 422) {
-    const count = showValidationErrors(body);
-    showStatus('error', 'Sheet rejected — ' + count + ' problem(s) found.');
-    return;
-  }
-
-  if (!res.ok) {
-    showStatus('error', body.error || 'Preview failed');
-    return;
-  }
-
-  let summary = body.total + ' student(s) across ' + body.groups + ' batch request(s). Nothing was sent to NSDC.';
-  if (body.skipped) summary += ' ' + body.skipped + ' already enrolled, skipped.';
-  if (body.unresolvedCount) summary += ' ' + body.unresolvedCount + ' could not be matched.';
-  showStatus(body.unresolvedCount ? 'error' : 'done', summary);
-
-  if (body.unresolvedCount) {
-    showErrors('These rows will not be sent', (body.unresolved || [])
-      .map(u => 'Row ' + u.row + ' (' + u.email + '): ' + u.error));
-  }
-
-  previewTitle.textContent = 'Payload preview — ' + body.groups + ' request(s)';
-  previewBody.textContent = JSON.stringify(body.payloads, null, 2);
-  previewEl.style.display = 'block';
-}
-
 // All dynamic values are rendered via textContent / DOM nodes, never innerHTML
 function showStatus(cls, text) {
   statusEl.className = 'status ' + cls;
@@ -174,58 +108,16 @@ function showErrors(title, messages) {
   errorsEl.style.display = 'block';
 }
 
-async function startUpload() {
-  const file = fileInput.files && fileInput.files[0];
-  if (!file) {
-    showStatus('error', 'Choose a .csv or .xlsx file first.');
-    return;
-  }
-
-  uploadBtn.disabled = true;
-  clearErrors();
-  previewEl.style.display = 'none';
-  downloadRow.style.display = 'none';
-  showStatus('running', 'Checking the sheet…');
-
-  const form = new FormData();
-  form.append('sheet', file);
-
-  let res;
-  try {
-    res = await fetch('/api/enroll/upload', { method: 'POST', body: form });
-  } catch (err) {
-    showStatus('error', 'Upload failed: ' + err.message);
-    uploadBtn.disabled = false;
-    return;
-  }
-
-  if (res.status === 401) return location.href = '/login';
-
-  const body = await res.json().catch(() => ({}));
-
-  if (res.status === 422) {
-    // Validation failed — nothing was sent to NSDC
-    const count = showValidationErrors(body);
-    showStatus('error', 'Sheet rejected — ' + count + ' problem(s) found. Nothing was sent to NSDC.');
-    uploadBtn.disabled = false;
-    return;
-  }
-
-  if (!res.ok) {
-    showStatus('error', body.error || 'Upload failed');
-    uploadBtn.disabled = false;
-    return;
-  }
-
-  const notes = [];
-  if (body.skipped) notes.push(body.skipped + ' row(s) already enrolled — skipped');
-  if (body.unresolvedCount) notes.push(body.unresolvedCount + ' row(s) could not be matched — see the result CSV');
-  if (notes.length > 0) {
-    banner.style.display = 'block';
-    banner.textContent = notes.join('. ') + '.';
-  }
-
-  poll();
+// A run that stops part way has really enrolled some of the list. Saying how
+// many, and how many are left, is the difference between knowing what to do
+// next and having to work it out from the result file. The rest stay in the
+// waiting list above, so there is nothing to re-upload.
+function howFar(data) {
+  const done = data.stoppedAfter || 0;
+  const left = Math.max(0, (data.total || 0) - done);
+  if (done === 0) return 'Nobody was enrolled — all ' + data.total + ' are still waiting above.';
+  return done + ' of ' + data.total + ' students were enrolled before it stopped; ' +
+    left + ' still waiting above. The result sheet lists exactly which.';
 }
 
 function showRunning(data) {
@@ -263,14 +155,12 @@ async function poll() {
   }
 
   if (data.state === 'running') {
-    uploadBtn.disabled = true;
+    pendingBtn.disabled = true;
     showRunning(data);
     downloadRow.style.display = 'none';
     pollTimer = setTimeout(poll, 1500);
     return;
   }
-
-  uploadBtn.disabled = false;
 
   loadPending();
 
@@ -285,25 +175,21 @@ async function poll() {
       fileMeta.textContent = data.resultFileName + ' — finished ' + new Date(data.finishedAt).toLocaleString();
     }
   } else if (data.state === 'error') {
-    // A run that stopped part way still did real work; say how much, so the
-    // sheet is not re-uploaded blind.
+    // A run that stopped part way still did real work; say how much, so it is
+    // clear what is left rather than looking like nothing happened.
     if (data.serviceDown) {
-      const done = data.stoppedAfter
-        ? data.stoppedAfter + ' of ' + data.total + ' went through before it stopped. '
-        : 'Nothing was sent. ';
-      showStatus('error', 'Skill India (NSDC) is not responding. ' + done +
-        'Try again once it is back — re-uploading the same sheet picks up where this left off.');
+      showStatus('error', 'Skill India (NSDC) is not responding. ' + howFar(data) +
+        ' Try again once it is back.');
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
 
-    if (data.stoppedAfter) {
-      showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
-        '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');
+    if (data.stoppedAfter !== null) {
+      showStatus('error', 'The run stopped early. ' + howFar(data));
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
-    showStatus('error', 'Upload failed: ' + (data.error || 'Unknown error'));
+    showStatus('error', 'Enrolment failed: ' + (data.error || 'Unknown error'));
     if (data.resultReady) downloadRow.style.display = 'block';
   }
 }

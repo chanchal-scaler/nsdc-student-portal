@@ -150,6 +150,17 @@ async function startUpload() {
   poll();
 }
 
+// A run that stops part way has really registered some of the sheet. Saying how
+// many, and how many are left, is the difference between knowing what to do
+// next and having to work it out from the result file.
+function howFar(data) {
+  const done = data.stoppedAfter || 0;
+  const left = Math.max(0, (data.total || 0) - done);
+  if (done === 0) return 'No student was sent — the whole sheet is still to do.';
+  return done + ' of ' + data.total + ' students were registered before it stopped; ' +
+    left + ' still to go. The result sheet lists exactly which.';
+}
+
 function showRunning(data) {
   statusEl.className = 'status running';
   statusEl.textContent = '';
@@ -232,18 +243,15 @@ async function poll() {
     // A run that stopped part way still did real work; say how much, so the
     // sheet is not re-uploaded blind.
     if (data.serviceDown) {
-      const done = data.stoppedAfter
-        ? data.stoppedAfter + ' of ' + data.total + ' went through before it stopped. '
-        : 'Nothing was sent. ';
-      showStatus('error', 'Skill India (NSDC) is not responding. ' + done +
-        'Try again once it is back — re-uploading the same sheet picks up where this left off.');
+      showStatus('error', 'Skill India (NSDC) is not responding. ' + howFar(data) +
+        ' Try again once it is back — re-uploading the same sheet picks up where this left off, so nothing is sent twice.');
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
 
-    if (data.stoppedAfter) {
-      showStatus('error', 'Stopped after ' + data.stoppedAfter + ' of ' + data.total +
-        '. Those are done — download the result sheet to see them. Uploading the same sheet again picks up where this left off.');
+    if (data.stoppedAfter !== null) {
+      showStatus('error', 'The run stopped early. ' + howFar(data) +
+        ' Re-uploading the same sheet picks up where this left off.');
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
