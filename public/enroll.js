@@ -11,6 +11,13 @@ const pendingNote = document.getElementById('pendingNote');
 const pendingBtn = document.getElementById('pendingBtn');
 let pollTimer = null;
 
+const reloadLastRun = showLastRun(data => {
+  const e = data.enrolments;
+  if (!e || !e.total) return '';
+  return `${e.total} student(s) enrolled so far, most recently on ${onDate(e.lastAt)}.`;
+});
+
+
 
 pendingBtn.addEventListener('click', enrolPending);
 
@@ -164,6 +171,8 @@ async function poll() {
   }
 
   loadPending();
+
+  reloadLastRun();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.enrolled + ' enrolled, ' + data.alreadyEnrolled +

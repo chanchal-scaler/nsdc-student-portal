@@ -13,6 +13,13 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
+const reloadLastRun = showLastRun(data => {
+  const b = data.batches;
+  if (!b || !b.total) return '';
+  return `${b.total} batch(es) created so far. The last was ${b.latest}, on ${onDate(b.lastAt)}.`;
+});
+
+
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
@@ -162,6 +169,8 @@ async function poll() {
   }
 
   uploadBtn.disabled = false;
+
+  reloadLastRun();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' created, ' + data.failed + ' failed.';

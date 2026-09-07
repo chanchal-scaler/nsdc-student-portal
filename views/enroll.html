@@ -33,6 +33,8 @@
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     padding: 2rem;
   }
+  .last-run { display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
+    padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.8125rem; color: #075985; }
   .card p { color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem; }
   .banner {
     background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
@@ -93,6 +95,7 @@
 
     <div class="card">
       <div class="banner" id="banner"></div>
+      <div class="last-run" id="lastRun"></div>
 
       <p>Students whose sheet named a batch are enrolled here. Candidate and batch IDs come from what the Students and Batches pages stored, so there is nothing to fill in — a student waits until the batch they name exists, and one already enrolled is not enrolled again.</p>
 
@@ -121,6 +124,7 @@
     </div>
   </div>
 
+  <script src="/last-run.js"></script>
   <script src="/enroll.js"></script>
 </body>
 </html>

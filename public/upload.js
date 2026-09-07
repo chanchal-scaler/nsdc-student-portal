@@ -14,6 +14,15 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
+const reloadLastRun = showLastRun(data => {
+  const s = data.students;
+  if (!s || !s.total) return '';
+  const covered = listBatches(s.batches);
+  return `${s.total} student(s) uploaded so far, most recently on ${onDate(s.lastAt)}` +
+    (covered ? `. Batches covered: ${covered}.` : '.');
+});
+
+
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
@@ -210,6 +219,8 @@ async function poll() {
   }
 
   uploadBtn.disabled = false;
+
+  reloadLastRun();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' new, ' + data.duplicates +

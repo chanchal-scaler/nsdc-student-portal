@@ -14,7 +14,7 @@ import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates } from './lib/nsdc-enrollments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, lastRunSummary, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1173,6 +1173,18 @@ app.get('/api/enroll/result', requireLogin, (req, res) => {
         return res.status(404).json({ error: 'No result available. Run an enrolment first.' });
     }
     res.download(enrollJob.resultFile, enrollJob.resultFileName);
+});
+
+/**
+ * Where the portal got to last time. Uploads come every few months, so the
+ * first thing anyone needs on returning is which months are already done.
+ */
+app.get('/api/last-run', requireLogin, async (req, res) => {
+    try {
+        res.json(await lastRunSummary() || {});
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));
