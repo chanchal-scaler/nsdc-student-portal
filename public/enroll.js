@@ -11,19 +11,6 @@ const pendingNote = document.getElementById('pendingNote');
 const pendingBtn = document.getElementById('pendingBtn');
 let pollTimer = null;
 
-const reloadHistory = renderHistory({
-  endpoint: '/api/history/enrollments',
-  countLabel: 'student(s) enrolled through the portal',
-  columns: [
-    { label: 'Candidate ID', value: r => r.candidate_id },
-    { label: 'Email',        value: r => r.email || '' },
-    { label: 'Batch',        value: r => r.batch_name || '' },
-    { label: 'Batch ID',     value: r => r.batch_id },
-    { label: 'Status',       value: r => r.status === 'COMPLETED' ? 'Enrolled, results in' : 'Enrolled' },
-    { label: 'When',         value: r => whenText(r.enrolled_at) }
-  ]
-});
-
 
 pendingBtn.addEventListener('click', enrolPending);
 
@@ -177,8 +164,6 @@ async function poll() {
   }
 
   loadPending();
-
-  reloadHistory();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.enrolled + ' enrolled, ' + data.alreadyEnrolled +

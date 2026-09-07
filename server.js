@@ -14,7 +14,7 @@ import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates } from './lib/nsdc-enrollments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, recentCandidates, recentBatches, recentEnrollments, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1173,34 +1173,6 @@ app.get('/api/enroll/result', requireLogin, (req, res) => {
         return res.status(404).json({ error: 'No result available. Run an enrolment first.' });
     }
     res.download(enrollJob.resultFile, enrollJob.resultFileName);
-});
-
-/**
- * What each page has already stored. Shown on the page itself so a run leaves a
- * visible record, rather than only a result CSV someone has to have kept.
- */
-app.get('/api/history/candidates', requireLogin, async (req, res) => {
-    try {
-        res.json(await recentCandidates());
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/history/batches', requireLogin, async (req, res) => {
-    try {
-        res.json(await recentBatches());
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.get('/api/history/enrollments', requireLogin, async (req, res) => {
-    try {
-        res.json(await recentEnrollments());
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));

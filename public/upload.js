@@ -14,20 +14,6 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
-const reloadHistory = renderHistory({
-  endpoint: '/api/history/candidates',
-  countLabel: 'student(s) registered through the portal',
-  columns: [
-    { label: 'Candidate ID', value: r => r.candidate_id },
-    { label: 'Email',        value: r => r.email },
-    { label: 'Name',         value: r => r.name || '' },
-    { label: 'Batch',        value: r => r.batch_name || '' },
-    { label: 'Status',       value: r => r.status },
-    { label: 'From',         value: r => r.source_file || '' },
-    { label: 'When',         value: r => whenText(r.created_at) }
-  ]
-});
-
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
@@ -224,8 +210,6 @@ async function poll() {
   }
 
   uploadBtn.disabled = false;
-
-  reloadHistory();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' new, ' + data.duplicates +

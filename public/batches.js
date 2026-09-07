@@ -13,18 +13,6 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
-const reloadHistory = renderHistory({
-  endpoint: '/api/history/batches',
-  countLabel: 'batch(es) created through the portal',
-  columns: [
-    { label: 'Batch ID', value: r => r.batch_id },
-    { label: 'Name',     value: r => r.batch_name },
-    { label: 'Students', value: r => r.students },
-    { label: 'From',     value: r => r.source_file || '' },
-    { label: 'When',     value: r => whenText(r.created_at) }
-  ]
-});
-
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
@@ -174,8 +162,6 @@ async function poll() {
   }
 
   uploadBtn.disabled = false;
-
-  reloadHistory();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' created, ' + data.failed + ' failed.';

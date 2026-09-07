@@ -78,15 +78,6 @@
   .preview pre { max-height: 380px; overflow: auto; background: #111827; color: #e5e7eb;
     border-radius: 8px; padding: 0.875rem; font-size: 0.75rem; line-height: 1.5; margin-bottom: 0.5rem; }
   .meta { font-size: 0.8125rem; color: #6b7280; margin-top: 0.5rem; }
-  .history { display: none; margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid #e5e7eb; }
-  .history h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.25rem; }
-  .history .meta { margin-bottom: 0.75rem; }
-  .history-scroll { overflow-x: auto; }
-  .history table { border-collapse: collapse; font-size: 0.8125rem; width: 100%; }
-  .history th { text-align: left; font-weight: 600; color: #6b7280; padding: 0.375rem 1rem 0.375rem 0;
-    border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
-  .history td { padding: 0.375rem 1rem 0.375rem 0; color: #374151;
-    border-bottom: 1px solid #f3f4f6; white-space: nowrap; }
   .spinner {
     display: inline-block; width: 14px; height: 14px;
     border: 2px solid #bfdbfe; border-top-color: #1e40af;
@@ -146,12 +137,6 @@
         <div class="meta" id="enrollmentSheet" style="display:none"></div>
       </div>
 
-      <div class="history" id="history">
-        <h2>Students already registered</h2>
-        <div class="meta" id="historySummary"></div>
-        <div class="history-scroll"><table id="historyTable"></table></div>
-      </div>
-
       <div class="preview" id="preview">
         <h2 id="previewTitle">Payload preview</h2>
         <pre id="previewBody"></pre>
@@ -160,7 +145,6 @@
     </div>
   </div>
 
-  <script src="/history.js"></script>
   <script src="/upload.js"></script>
 </body>
 </html>
