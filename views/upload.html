@@ -33,22 +33,16 @@
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     padding: 2rem;
   }
-  .last-run { display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
-    padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.8125rem; color: #075985; }
   .card p { color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem; }
   .banner {
     background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
     padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.8125rem; margin-bottom: 1.25rem;
     display: none;
   }
-  .rules { font-size: 0.8125rem; color: #4b5563; background: #f9fafb; border: 1px solid #e5e7eb;
+  .rules { font-size: 0.8125rem; color: #075985; background: #f0f9ff; border: 1px solid #bae6fd;
     border-radius: 8px; padding: 0.875rem 1rem 0.875rem 2rem; margin-bottom: 1.25rem; }
   .rules li { margin-bottom: 0.25rem; }
-  .rules code { background: #eef2ff; padding: 0 0.25rem; border-radius: 4px; }
-  .format-note { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
-    padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.8125rem; color: #78350f; }
-  .format-note strong { display: block; margin-bottom: 0.125rem; color: #92400e; }
-  .format-note code { background: #fef3c7; padding: 0 0.25rem; border-radius: 4px; }
+  .rules code { background: #e0f2fe; padding: 0 0.25rem; border-radius: 4px; }
   .file-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
   input[type="file"] { font-size: 0.875rem; }
   .btn {
@@ -91,7 +85,7 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/upload" class="active">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload" class="active">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a></nav>
     <div class="header">
       <h1>Upload students</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
@@ -99,26 +93,20 @@
 
     <div class="card">
       <div class="banner" id="banner"></div>
-      <div class="last-run" id="lastRun"></div>
 
       <p>Upload a sheet of students. Each row is registered on Skill India (NSDC) and comes back with a candidate ID.</p>
 
       <ul class="rules">
         <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB.</li>
         <li>Required columns: <code>namePrefix</code>, <code>name</code>, <code>dob</code>, <code>guardianName</code>, <code>email</code>, <code>phone</code>, <code>countryCode</code>, <code>Batch Name</code>. Common spellings such as "Student Name", "Mobile" or "Course" are recognised automatically.</li>
-        <li><code>phone</code> must be 10 digits and <code>countryCode</code> just the digits (<code>91</code>). A row where the two are the wrong way round is rejected — 512 candidates on NSDC have "91" as their phone number from a sheet where that happened.</li>
+        <li><strong><code>dob</code> must be written as <code>YYYY-MM-DD</code></strong> — <code>2003-07-15</code> for 15 July 2003. <code>15/7/2003</code> and <code>7/15/2003</code> are rejected rather than guessed: the same date can be read two ways, and a wrong date of birth cannot be corrected on NSDC afterwards.</li>
         <li><code>Batch Name</code> reads as &lt;Programme&gt; &lt;Month&gt;&lt;YY&gt; — <code>Academy Sep26</code>. The batch does not have to exist yet; one created afterwards fills itself in.</li>
-        <li>Gender is taken from <code>namePrefix</code> (Mr. → male, anything else → female), matching how NSDC records were created until now.</li>
+        <li><code>namePrefix</code> must be <code>Mr.</code>, <code>Mrs.</code> or <code>Ms.</code> — any other title, such as <code>Dr.</code>, is rejected. Gender is taken from it (Mr. is male, Mrs. and Ms. are female), matching how NSDC records were created until now.</li>
         <li><strong>Preview payload only</strong> validates the sheet and shows the exact JSON that would be sent to NSDC — no request is made and no candidate is created.</li>
         <li>Nothing is sent to NSDC until every row passes validation.</li>
         <li>Already-registered students are not duplicated — their existing candidate ID is returned.</li>
         <li>If the sheet names a batch per row — a <code>Batch Name</code>, <code>Batch</code> or <code>Course</code> column — the enrolment sheet for those students is built here, ready to upload on the Enrolment page. Students and batches can be uploaded in either order: a batch created afterwards fills itself in.</li>
       </ul>
-
-      <div class="format-note">
-        <strong>Dates must be written as YYYY-MM-DD</strong>
-        <span>2003-07-15 for 15 July 2003. <code>15/7/2003</code> and <code>7/15/2003</code> are rejected, not guessed — the same date can be read two ways and a wrong date of birth cannot be corrected on NSDC afterwards.</span>
-      </div>
 
       <div class="file-row">
         <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
@@ -148,7 +136,6 @@
     </div>
   </div>
 
-  <script src="/last-run.js"></script>
   <script src="/upload.js"></script>
 </body>
 </html>

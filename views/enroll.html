@@ -33,18 +33,16 @@
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     padding: 2rem;
   }
-  .last-run { display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
-    padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.8125rem; color: #075985; }
   .card p { color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem; }
   .banner {
     background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
     padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.8125rem; margin-bottom: 1.25rem;
     display: none;
   }
-  .rules { font-size: 0.8125rem; color: #4b5563; background: #f9fafb; border: 1px solid #e5e7eb;
+  .rules { font-size: 0.8125rem; color: #075985; background: #f0f9ff; border: 1px solid #bae6fd;
     border-radius: 8px; padding: 0.875rem 1rem 0.875rem 2rem; margin-bottom: 1.25rem; }
   .rules li { margin-bottom: 0.25rem; }
-  .rules code { background: #eef2ff; padding: 0 0.25rem; border-radius: 4px; }
+  .rules code { background: #e0f2fe; padding: 0 0.25rem; border-radius: 4px; }
   .btn {
     padding: 0.6875rem 1.5rem; border: none; border-radius: 8px;
     font-size: 0.9375rem; font-weight: 600; cursor: pointer;
@@ -69,13 +67,15 @@
     padding: 0.75rem 0.75rem 0.75rem 1.75rem; background: #fef2f2; font-size: 0.8125rem; color: #7f1d1d; }
   .errors li { margin-bottom: 0.25rem; }
   .download-row { margin-top: 1.25rem; display: none; }
-  .pending { display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px;
+  .pending { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px;
     padding: 1rem 1.25rem; margin-bottom: 1.25rem; }
   .pending h2 { font-size: 0.9375rem; color: #075985; margin-bottom: 0.25rem; }
   .pending .meta { margin-bottom: 0.75rem; }
   .pending-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
     border-radius: 8px; padding: 0.875rem; font-size: 0.75rem; line-height: 1.5; margin-bottom: 0.5rem; }
   .meta { font-size: 0.8125rem; color: #6b7280; margin-top: 0.5rem; }
+  /* The count above is what NSDC told this page; this is what NSDC holds */
+  .nsdc-note { display: none; margin-top: 0.75rem; font-size: 0.75rem; color: #6b7280; }
   .spinner {
     display: inline-block; width: 14px; height: 14px;
     border: 2px solid #bfdbfe; border-top-color: #1e40af;
@@ -87,7 +87,7 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll" class="active">Enrolment</a><a href="/complete">Completion</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll" class="active">Enrolment</a><a href="/complete">Completion</a></nav>
     <div class="header">
       <h1>Enrol students in batches</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
@@ -95,7 +95,6 @@
 
     <div class="card">
       <div class="banner" id="banner"></div>
-      <div class="last-run" id="lastRun"></div>
 
       <p>Students whose sheet named a batch are enrolled here. Candidate and batch IDs come from what the Students and Batches pages stored, so there is nothing to fill in — a student waits until the batch they name exists, and one already enrolled is not enrolled again.</p>
 
@@ -109,6 +108,7 @@
       </div>
 
       <div class="status" id="status"></div>
+      <div class="nsdc-note" id="nsdcNote"></div>
 
       <div class="errors" id="errors">
         <h2 id="errorsTitle">Not enrolled</h2>
@@ -124,7 +124,6 @@
     </div>
   </div>
 
-  <script src="/last-run.js"></script>
   <script src="/enroll.js"></script>
 </body>
 </html>

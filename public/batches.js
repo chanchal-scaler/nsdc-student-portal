@@ -13,16 +13,95 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
-const reloadLastRun = showLastRun(data => {
-  const b = data.batches;
-  if (!b || !b.total) return '';
-  return `${b.total} batch(es) created so far. The last was ${b.latest}, on ${onDate(b.lastAt)}.`;
-});
+// The poll that runs on page load and a button click can both be waiting on a
+// response at once, and a late poll used to repaint the finished-run status
+// over whatever the click had just put there — leaving, say, a green "2
+// created" above a red "nothing to create". Every render claims the status area
+// first; a response that no longer owns it is dropped.
+let statusToken = 0;
+const claimStatus = () => ++statusToken;
+const ownsStatus = token => token === statusToken;
+
 
 
 
 uploadBtn.addEventListener('click', startUpload);
 previewBtn.addEventListener('click', previewPayload);
+
+// Validates the sheet and shows the exact JSON that would be sent to NSDC.
+// Nothing is created: the endpoint stops before the create call.
+async function previewPayload() {
+  const token = claimStatus();
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    showStatus('error', 'Choose a .csv or .xlsx file first.');
+    return;
+  }
+
+  previewBtn.disabled = true;
+  clearErrors();
+  previewEl.style.display = 'none';
+  downloadRow.style.display = 'none';
+  banner.style.display = 'none';
+  showStatus('running', 'Building payloads…');
+
+  const form = new FormData();
+  form.append('sheet', file);
+
+  let res;
+  try {
+    res = await fetch('/api/batches/preview', { method: 'POST', body: form });
+  } catch (err) {
+    showStatus('error', 'Preview failed: ' + err.message);
+    previewBtn.disabled = false;
+    return;
+  }
+
+  if (res.status === 401) return location.href = '/login';
+
+  const body = await res.json().catch(() => ({}));
+
+  previewBtn.disabled = false;
+
+  if (!ownsStatus(token)) return;
+
+  if (res.status === 422) {
+    const count = showValidationErrors(body);
+    showStatus('error', 'Sheet rejected — ' + count + ' problem(s) found.');
+    return;
+  }
+
+  if (!res.ok) {
+    showStatus('error', body.error || 'Preview failed');
+    return;
+  }
+
+  // A batch that already exists is left out of the payloads. The reason has to
+  // appear next to the result, not only in the banner at the top of the card —
+  // "0 payload(s) built" on its own reads as the preview being broken.
+  const blocked = body.blocked || [];
+  if (blocked.length > 0) {
+    showErrors(
+      body.total === 0 ? 'Nothing to create' : 'These rows would be skipped',
+      blocked.map(b => 'Row ' + b.row + ': ' + b.batchName + ' — ' + b.error)
+    );
+  }
+
+  if (body.total === 0) {
+    showStatus('error', blocked.length > 0
+      ? 'Nothing to create — all ' + blocked.length + ' row(s) in the sheet are already done or waiting. Nothing was sent to NSDC.'
+      : 'The sheet has no rows to create. Nothing was sent to NSDC.');
+    return;
+  }
+
+  showStatus('done', body.total + ' payload(s) built' +
+    (blocked.length > 0 ? ', ' + blocked.length + ' row(s) skipped' : '') +
+    '. Nothing was sent to NSDC.');
+  previewTitle.textContent = 'Payload preview — showing ' +
+    Math.min(20, body.total) + ' of ' + body.total;
+  previewBody.textContent = JSON.stringify(body.payloads, null, 2);
+  previewEl.style.display = 'block';
+}
 
 function showValidationErrors(body) {
   const messages = [];
@@ -58,6 +137,7 @@ function showErrors(title, messages) {
 }
 
 async function startUpload() {
+  const token = claimStatus();
   const file = fileInput.files && fileInput.files[0];
   if (!file) {
     showStatus('error', 'Choose a .csv or .xlsx file first.');
@@ -85,6 +165,8 @@ async function startUpload() {
   if (res.status === 401) return location.href = '/login';
 
   const body = await res.json().catch(() => ({}));
+
+  if (!ownsStatus(token)) return;
 
   if (res.status === 422) {
     // Validation failed — nothing was sent to NSDC
@@ -150,6 +232,7 @@ function showRunning(data) {
 
 async function poll() {
   clearTimeout(pollTimer);
+  const token = claimStatus();
   let data;
   try {
     const res = await fetch('/api/batches/status');
@@ -159,6 +242,8 @@ async function poll() {
     pollTimer = setTimeout(poll, 3000);
     return;
   }
+
+  if (!ownsStatus(token)) return;
 
   if (data.state === 'running') {
     uploadBtn.disabled = true;
@@ -170,7 +255,6 @@ async function poll() {
 
   uploadBtn.disabled = false;
 
-  reloadLastRun();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' created, ' + data.failed + ' failed.';

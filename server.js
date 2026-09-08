@@ -7,14 +7,15 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
-import { fetchAndWriteStudents } from './lib/nsdc.js';
+import { fetchAndWriteStudents, fetchCandidatesForBatches } from './lib/nsdc.js';
 import { parseStudentSheet, parseBatchSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates } from './lib/nsdc-enrollments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, lastRunSummary, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
+    allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -308,6 +309,54 @@ async function buildEnrollmentSheet() {
     return generatedEnrollmentFile;
 }
 
+/**
+ * Files what happened, once, at the end of a run.
+ *
+ * The job state is in memory and the result CSV is deleted on the next page
+ * load, so without this a restart loses the answer to "how far did last time
+ * get" — which is the question someone returning months later starts with.
+ * `remaining` is everything that did not succeed, failures included, so it can
+ * be handed back as a sheet to upload next time.
+ */
+async function recordRun({ flow, sourceFile, batchNames, total, done, failed,
+    outcome, stopReason, error, remaining, startedAt }) {
+    if (!dbEnabled) return;
+    try {
+        await saveRun({
+            flow, sourceFile,
+            batchNames: [...new Set((batchNames || []).filter(Boolean))],
+            total, done, failed, outcome, stopReason, error,
+            remaining: remaining || [],
+            startedAt
+        });
+    } catch (err) {
+        // A run that worked must not be reported as failed because the record
+        // of it could not be written
+        console.error(`Could not record the ${flow} run:`, err.message);
+    }
+}
+
+/**
+ * The student rows still to do: never sent, or sent and failed. Returned in the
+ * template's own columns so the sheet handed back can be uploaded as it is.
+ */
+function studentsLeft(students, collected) {
+    const done = new Set(collected.filter(r => r.candidateId).map(r => String(r.email).toLowerCase()));
+    return students
+        .filter(row => !done.has(String(row.email).toLowerCase()))
+        .map(row => ({
+            namePrefix: row.namePrefix,
+            name: row.name,
+            gender: row.gender || '',
+            dob: row.dob,
+            guardianName: row.guardianName,
+            email: row.email,
+            phone: row.phone,
+            countryCode: row.countryCode,
+            'Batch Name': row.batchName || ''
+        }));
+}
+
 function startUploadJob(students, sourceFileName) {
     resetUpload();
 
@@ -357,6 +406,17 @@ function startUploadJob(students, sourceFileName) {
         upload.failed = failed;
         upload.resultFile = filePath;
         upload.resultFileName = fileName;
+        recordRun({
+            flow: 'students',
+            sourceFile: sourceFileName,
+            batchNames: students.map(r => r.batchName),
+            total: students.length,
+            done: created + duplicates,
+            failed,
+            outcome: 'finished',
+            remaining: studentsLeft(students, collected),
+            startedAt: upload.startedAt
+        });
         console.log(`Upload complete: ${created} new, ${duplicates} duplicate, ${failed} failed`);
     }).catch(err => {
         // Whatever finished before the failure is written out and reported, so
@@ -371,6 +431,19 @@ function startUploadJob(students, sourceFileName) {
         upload.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         upload.error = upload.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
         upload.stoppedAfter = collected.length;
+        recordRun({
+            flow: 'students',
+            sourceFile: sourceFileName,
+            batchNames: students.map(r => r.batchName),
+            total: students.length,
+            done: collected.filter(r => r.candidateId).length,
+            failed: collected.filter(r => !r.candidateId).length,
+            outcome: 'stopped',
+            stopReason: upload.serviceDown ? 'service-down' : 'error',
+            error: err.message,
+            remaining: studentsLeft(students, collected),
+            startedAt: upload.startedAt
+        });
         console.error(`Upload job stopped after ${collected.length} of ${students.length}:`, err);
     });
 }
@@ -469,6 +542,17 @@ function writeBatchResultCsv(results) {
     return { filePath, fileName };
 }
 
+/**
+ * The batch rows still to do. `size` is left out: it is counted from the
+ * students on file at the time of upload, not carried in the sheet.
+ */
+function batchesLeft(ready, collected) {
+    const done = new Set(collected.filter(r => r.batchId).map(r => String(r.batchName).toLowerCase()));
+    return ready
+        .filter(row => !done.has(String(row.batchName).toLowerCase()))
+        .map(({ size, rowNumber, ...row }) => row);
+}
+
 function startBatchJob({ ready, blocked }, sourceFileName) {
     resetBatchJob();
 
@@ -512,6 +596,17 @@ function startBatchJob({ ready, blocked }, sourceFileName) {
         batchJob.failed = failed + blocked.length;
         batchJob.resultFile = filePath;
         batchJob.resultFileName = fileName;
+        recordRun({
+            flow: 'batches',
+            sourceFile: sourceFileName,
+            batchNames: ready.map(r => r.batchName),
+            total: ready.length,
+            done: created,
+            failed: failed + blocked.length,
+            outcome: 'finished',
+            remaining: batchesLeft(ready, collected),
+            startedAt: batchJob.startedAt
+        });
         console.log(`Batch upload complete: ${created} created, ${failed + blocked.length} not created`);
     }).catch(err => {
         if (collected.length > 0 || blocked.length > 0) {
@@ -525,6 +620,19 @@ function startBatchJob({ ready, blocked }, sourceFileName) {
         batchJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         batchJob.error = batchJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
         batchJob.stoppedAfter = collected.length;
+        recordRun({
+            flow: 'batches',
+            sourceFile: sourceFileName,
+            batchNames: ready.map(r => r.batchName),
+            total: ready.length,
+            done: collected.filter(r => r.batchId).length,
+            failed: collected.filter(r => !r.batchId).length + blocked.length,
+            outcome: 'stopped',
+            stopReason: batchJob.serviceDown ? 'service-down' : 'error',
+            error: err.message,
+            remaining: batchesLeft(ready, collected),
+            startedAt: batchJob.startedAt
+        });
         console.error(`Batch job stopped after ${collected.length} of ${ready.length}:`, err);
     });
 }
@@ -623,6 +731,42 @@ function writeEnrollResultCsv(results) {
     return { filePath, fileName };
 }
 
+/**
+ * The students still to enrol: never sent, sent and failed, or never matched to
+ * a candidate or batch in the first place. Enrolment is driven from what the
+ * portal already stored rather than a sheet, so this is a plain list to read
+ * rather than a file to re-upload.
+ */
+function enrolmentsLeft(groups, collected, unresolved) {
+    const done = new Set(collected
+        .filter(r => r.status !== 'FAILED')
+        .map(r => `${r.candidateId}|${r.batchId}`));
+
+    const left = [];
+    for (const group of groups) {
+        for (const row of group.rows) {
+            if (done.has(`${row.candidateId}|${group.batchId}`)) continue;
+            left.push({
+                email: row.email,
+                candidateId: row.candidateId,
+                batchName: group.batchName,
+                batchId: group.batchId,
+                reason: 'not enrolled yet'
+            });
+        }
+    }
+    for (const row of unresolved || []) {
+        left.push({
+            email: row.email,
+            candidateId: row.candidateId || '',
+            batchName: row.batchName || '',
+            batchId: row.batchId || '',
+            reason: row.error || 'could not be matched'
+        });
+    }
+    return left;
+}
+
 function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
     resetEnrollJob();
 
@@ -672,6 +816,17 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
         enrollJob.failed = failed + unresolved.length;
         enrollJob.resultFile = filePath;
         enrollJob.resultFileName = fileName;
+        recordRun({
+            flow: 'enrolment',
+            sourceFile: sourceFileName,
+            batchNames: groups.map(g => g.batchName),
+            total,
+            done: enrolled + alreadyEnrolled,
+            failed: failed + unresolved.length,
+            outcome: 'finished',
+            remaining: enrolmentsLeft(groups, collected, unresolved),
+            startedAt: enrollJob.startedAt
+        });
         console.log(`Enrolment complete: ${enrolled} enrolled, ${alreadyEnrolled} already in batch, ${skipped.length} skipped, ${failed + unresolved.length} failed`);
     }).catch(err => {
         const { filePath, fileName } = writeEnrollResultCsv([...collected, ...unresolved, ...skipped]);
@@ -682,7 +837,114 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
         enrollJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         enrollJob.error = enrollJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
         enrollJob.stoppedAfter = collected.length;
+        recordRun({
+            flow: 'enrolment',
+            sourceFile: sourceFileName,
+            batchNames: groups.map(g => g.batchName),
+            total,
+            done: collected.filter(r => r.status !== 'FAILED').length,
+            failed: collected.filter(r => r.status === 'FAILED').length + unresolved.length,
+            outcome: 'stopped',
+            stopReason: enrollJob.serviceDown ? 'service-down' : 'error',
+            error: err.message,
+            remaining: enrolmentsLeft(groups, collected, unresolved),
+            startedAt: enrollJob.startedAt
+        });
         console.error(`Enrolment job stopped after ${collected.length} of ${total}:`, err);
+    });
+}
+
+// ---- NSDC read job (one at a time) ----
+//
+// Reads what NSDC holds for the batches this portal knows about, so the
+// "Enrolled so far" page can say which students never made it — the ones a
+// stopped run left behind. The list endpoint has no batch filter, so this pages
+// the whole list and keeps the batches asked about; it takes minutes against
+// the real service, which is why it runs as a job with progress rather than
+// inside a request.
+const syncJob = {
+    state: 'idle', // idle | running | done | error
+    startedAt: null,
+    finishedAt: null,
+    pagesFetched: 0,
+    totalPages: null,
+    candidatesSeen: 0,
+    matched: 0,
+    batches: 0,
+    failedPages: [],
+    serviceDown: false,
+    error: null
+};
+
+function startSyncJob(batches) {
+    syncJob.state = 'running';
+    syncJob.startedAt = new Date().toISOString();
+    syncJob.finishedAt = null;
+    syncJob.pagesFetched = 0;
+    syncJob.totalPages = null;
+    syncJob.candidatesSeen = 0;
+    syncJob.matched = 0;
+    syncJob.batches = batches.length;
+    syncJob.failedPages = [];
+    syncJob.serviceDown = false;
+    syncJob.error = null;
+
+    fetchCandidatesForBatches({
+        userName: NSDC_USERNAME,
+        password: NSDC_PASSWORD,
+        tpId: TP_ID,
+        batchIds: batches.map(b => b.batchId),
+        onProgress: ({ pagesFetched, totalPages, candidatesSeen, matched, failedPages }) => {
+            syncJob.pagesFetched = pagesFetched;
+            syncJob.totalPages = totalPages;
+            syncJob.candidatesSeen = candidatesSeen;
+            syncJob.matched = matched;
+            syncJob.failedPages = failedPages;
+        }
+    }).then(async ({ byBatch, candidatesSeen, pagesFetched, failedPages }) => {
+        const written = await saveNsdcBatchStudents(byBatch);
+        syncJob.state = 'done';
+        syncJob.finishedAt = new Date().toISOString();
+        syncJob.matched = written;
+        await saveNsdcSync({
+            startedAt: syncJob.startedAt,
+            finishedAt: syncJob.finishedAt,
+            pagesFetched,
+            candidates: candidatesSeen,
+            matched: written,
+            failedPages: failedPages.length,
+            outcome: failedPages.length > 0 ? 'partial' : 'finished'
+        });
+        console.log(`NSDC read complete: ${candidatesSeen} candidates over ${pagesFetched} page(s), ${written} in known batches`);
+    }).catch(async err => {
+        // A read that stopped part way still wrote the batches it got to, so
+        // what it did read is kept rather than thrown away
+        if (err.partial && err.partial.byBatch && err.partial.byBatch.size > 0) {
+            try {
+                syncJob.matched = await saveNsdcBatchStudents(err.partial.byBatch);
+            } catch (writeErr) {
+                console.error('Could not store the partial NSDC read:', writeErr.message);
+            }
+        }
+        syncJob.state = 'error';
+        syncJob.finishedAt = new Date().toISOString();
+        syncJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
+        syncJob.error = syncJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
+        try {
+            await saveNsdcSync({
+                startedAt: syncJob.startedAt,
+                finishedAt: syncJob.finishedAt,
+                pagesFetched: syncJob.pagesFetched,
+                candidates: syncJob.candidatesSeen,
+                matched: syncJob.matched,
+                failedPages: (syncJob.failedPages || []).length,
+                outcome: 'stopped',
+                error: err.message
+            });
+        } catch (saveErr) {
+            console.error('Could not record the NSDC read:', saveErr.message);
+        }
+        console.error('NSDC read stopped:', err.message);
     });
 }
 
@@ -1179,12 +1441,134 @@ app.get('/api/enroll/result', requireLogin, (req, res) => {
  * Where the portal got to last time. Uploads come every few months, so the
  * first thing anyone needs on returning is which months are already done.
  */
-app.get('/api/last-run', requireLogin, async (req, res) => {
-    try {
-        res.json(await lastRunSummary() || {});
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+/**
+ * Where the portal got to, in full. The one-line summary on the upload pages
+ * says which months are done; this page says who is in each of those batches,
+ * which is the question that follows it.
+ */
+app.get('/history', requireLogin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'views', 'history.html'));
+});
+
+app.get('/api/history', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so nothing has been recorded' });
     }
+    // Paged, because the list only grows: the page loads the next few batches as
+    // they are scrolled to rather than every month ever in one response
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+    try {
+        const page = await enrolmentHistory({ limit, offset });
+        // The runs panel and the state of the last NSDC read are only wanted on
+        // the first page
+        page.runs = offset === 0 ? await recentRuns(5) : [];
+        page.sync = offset === 0 ? await nsdcSyncState() : null;
+        res.json(page);
+    } catch (err) {
+        res.status(500).json({ error: `Could not read what has been recorded: ${err.message}` });
+    }
+});
+
+/** Starts a read of NSDC for every batch this portal knows about. */
+app.post('/api/history/sync', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is nothing to compare against' });
+    }
+    if (syncJob.state === 'running') {
+        return res.status(409).json({ error: 'A read of NSDC is already in progress' });
+    }
+
+    let batches;
+    try {
+        batches = await allBatchIds();
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+    if (batches.length === 0) {
+        return res.status(400).json({ error: 'No batch has been created yet, so there is nothing to read' });
+    }
+
+    startSyncJob(batches);
+    res.json({ started: true, batches: batches.length });
+});
+
+app.get('/api/history/sync/status', requireLogin, async (req, res) => {
+    let last = null;
+    try {
+        last = dbEnabled ? await nsdcSyncState() : null;
+    } catch { /* the live job state is still worth answering with */ }
+
+    res.json({
+        state: syncJob.state,
+        startedAt: syncJob.startedAt,
+        finishedAt: syncJob.finishedAt,
+        pagesFetched: syncJob.pagesFetched,
+        totalPages: syncJob.totalPages,
+        candidatesSeen: syncJob.candidatesSeen,
+        matched: syncJob.matched,
+        batches: syncJob.batches,
+        failedPages: syncJob.failedPages.length,
+        serviceDown: syncJob.serviceDown,
+        error: syncJob.error,
+        last
+    });
+});
+
+/**
+ * The rows a run did not get through, as a sheet.
+ *
+ * A run that stopped when NSDC went down has really done part of the work.
+ * Handing back only what is left is the difference between uploading the
+ * remainder and uploading the whole file again to find out.
+ */
+app.get('/api/runs/:id/remaining', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so nothing has been recorded' });
+    }
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+        return res.status(400).json({ error: 'Not a run id' });
+    }
+
+    let run;
+    try {
+        run = await runRemaining(id);
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+    if (!run) return res.status(404).json({ error: 'No such run' });
+    if (!run.rows || run.rows.length === 0) {
+        return res.status(404).json({ error: 'That run has nothing left to do' });
+    }
+
+    // Postgres sorts jsonb keys alphabetically, so the column order has to be
+    // put back: a sheet handed back is uploaded again, and it should look like
+    // the template it came from
+    const ORDERS = {
+        students: [...TEMPLATE_COLUMNS, 'Batch Name'],
+        batches: BATCH_COLUMNS,
+        enrolment: ['email', 'candidateId', 'batchName', 'batchId', 'reason']
+    };
+    const present = Object.keys(run.rows[0]);
+    const order = ORDERS[run.flow] || [];
+    const headers = [
+        ...order.filter(column => present.includes(column)),
+        ...present.filter(column => !order.includes(column))
+    ];
+    const escape = value => {
+        const text = value === null || value === undefined ? '' : String(value);
+        return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+    };
+    const csv = [
+        headers.join(','),
+        ...run.rows.map(row => headers.map(h => escape(row[h])).join(','))
+    ].join('\n') + '\n';
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition',
+        `attachment; filename="still_to_do_${run.flow}_run${id}.csv"`);
+    res.send(csv);
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));

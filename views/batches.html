@@ -33,22 +33,16 @@
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
     padding: 2rem;
   }
-  .last-run { display: none; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
-    padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.8125rem; color: #075985; }
   .card p { color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem; }
   .banner {
     background: #fffbeb; border: 1px solid #fde68a; color: #92400e;
     padding: 0.75rem 1rem; border-radius: 8px; font-size: 0.8125rem; margin-bottom: 1.25rem;
     display: none;
   }
-  .rules { font-size: 0.8125rem; color: #4b5563; background: #f9fafb; border: 1px solid #e5e7eb;
+  .rules { font-size: 0.8125rem; color: #075985; background: #f0f9ff; border: 1px solid #bae6fd;
     border-radius: 8px; padding: 0.875rem 1rem 0.875rem 2rem; margin-bottom: 1.25rem; }
   .rules li { margin-bottom: 0.25rem; }
-  .rules code { background: #eef2ff; padding: 0 0.25rem; border-radius: 4px; }
-  .format-note { background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px;
-    padding: 0.75rem 1rem; margin-bottom: 1rem; font-size: 0.8125rem; color: #78350f; }
-  .format-note strong { display: block; margin-bottom: 0.125rem; color: #92400e; }
-  .format-note code { background: #fef3c7; padding: 0 0.25rem; border-radius: 4px; }
+  .rules code { background: #e0f2fe; padding: 0 0.25rem; border-radius: 4px; }
   .file-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
   input[type="file"] { font-size: 0.875rem; }
   .btn {
@@ -91,7 +85,7 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/upload">Students</a><a href="/batches" class="active">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches" class="active">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a></nav>
     <div class="header">
       <h1>Create batches</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
@@ -99,7 +93,6 @@
 
     <div class="card">
       <div class="banner" id="banner"></div>
-      <div class="last-run" id="lastRun"></div>
 
       <p>Upload a sheet of batches. Each row is created on Skill India (NSDC) and comes back with a batch ID.</p>
 
@@ -108,21 +101,12 @@
         <li>All 21 batch columns are required — use the template below to get the exact names. There is no <code>size</code> column: the size is counted from the students already uploaded for that batch.</li>
         <li><strong>Upload the students first.</strong> A batch nobody has been uploaded for is not created, since its size would be zero.</li>
         <li>A batch whose name already exists is not created again. NSDC does not refuse a repeated name — it quietly makes "Academy Sep26(2)" — so the portal stops it here.</li>
-        <li>Dates are read the same way the existing batch script reads them, so <code>10-Jan-2026</code> and <code>1/10/2026 2:00:00</code> both work.</li>
+        <li><strong>Dates must be readable, and <code>YYYY-MM-DD</code> is safest.</strong> <code>2026-09-01</code>, <code>01-Sep-2026</code> and <code>9/1/2026 2:00:00</code> all work — read the same way the existing batch script reads them.</li>
+        <li><strong>Batch names read as &lt;Programme&gt; &lt;Month&gt;&lt;YY&gt;</strong> — <code>Academy Sep26</code>, <code>DSML July27</code>. Programme is one of Academy, DSML, DevOps, AIML, SST, OPGP, SSB.</li>
         <li><code>sector</code>, <code>schemeType</code> and <code>createdSource</code> are fixed values the script always sends; they are not columns in the sheet.</li>
         <li><strong>Preview payload only</strong> validates the sheet and shows the exact JSON that would be sent to NSDC — no request is made and no batch is created.</li>
         <li>NSDC renames a clashing batch, so "Academy Dec25" can come back as "Academy Dec25(2)". The result sheet shows the name NSDC actually used.</li>
       </ul>
-
-      <div class="format-note">
-        <strong>Dates must be readable — YYYY-MM-DD is safest</strong>
-        <span>2026-09-01, 01-Sep-2026 and 9/1/2026 2:00:00 all work here, as they do in the existing batch script.</span>
-      </div>
-
-      <div class="format-note">
-        <strong>Batch names: &lt;Programme&gt; &lt;Month&gt;&lt;YY&gt;</strong>
-        <span><code>Academy Sep26</code>, <code>DSML July27</code>. Programme is one of Academy, DSML, DevOps, AIML, SST, OPGP, SSB.</span>
-      </div>
 
       <div class="file-row">
         <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
@@ -152,7 +136,6 @@
     </div>
   </div>
 
-  <script src="/last-run.js"></script>
   <script src="/batches.js"></script>
 </body>
 </html>

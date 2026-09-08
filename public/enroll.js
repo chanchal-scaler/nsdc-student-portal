@@ -5,21 +5,63 @@ const errorList = document.getElementById('errorList');
 const downloadRow = document.getElementById('downloadRow');
 const fileMeta = document.getElementById('fileMeta');
 const banner = document.getElementById('banner');
-const pendingEl = document.getElementById('pending');
 const pendingTitle = document.getElementById('pendingTitle');
 const pendingNote = document.getElementById('pendingNote');
 const pendingBtn = document.getElementById('pendingBtn');
+const nsdcNote = document.getElementById('nsdcNote');
 let pollTimer = null;
 
-const reloadLastRun = showLastRun(data => {
-  const e = data.enrolments;
-  if (!e || !e.total) return '';
-  return `${e.total} student(s) enrolled so far, most recently on ${onDate(e.lastAt)}.`;
-});
+// The poll that runs on page load and a button click can both be waiting on a
+// response at once, and a late poll used to repaint the finished-run status
+// over whatever the click had just put there — leaving, say, a green "2
+// created" above a red "nothing to create". Every render claims the status area
+// first; a response that no longer owns it is dropped.
+let statusToken = 0;
+const claimStatus = () => ++statusToken;
+const ownsStatus = token => token === statusToken;
+
 
 
 
 pendingBtn.addEventListener('click', enrolPending);
+
+/**
+ * What NSDC itself says is enrolled, under the count this page was told.
+ *
+ * One request enrols a whole batch, so a request that wrote students and then
+ * failed reports nothing — this page's own numbers can be wrong by a whole
+ * batch. The verified count comes from the last read of NSDC.
+ */
+async function showNsdcCount() {
+  let state;
+  try {
+    const res = await fetch('/api/history/sync/status');
+    if (!res.ok) return;
+    state = await res.json();
+  } catch {
+    return;
+  }
+
+  const last = state.last;
+  if (!last || !last.finishedAt) {
+    nsdcNote.textContent = 'NSDC has not been read yet, so the number actually enrolled is not confirmed. ' +
+      '"Enrolled so far" reads it back.';
+  } else {
+    nsdcNote.textContent = 'NSDC last read ' + onDateTime(last.finishedAt) + ': ' +
+      last.enrolled + ' student(s) enrolled across ' + last.batches + ' batch(es)' +
+      (last.certified ? ', ' + last.certified + ' certified' : '') + '.' +
+      (last.staleSince ? ' A run has happened since, so read NSDC again on "Enrolled so far".' : '');
+  }
+  nsdcNote.style.display = 'block';
+}
+
+/** "8 September 2026, 18:18" */
+function onDateTime(value) {
+  if (!value) return '—';
+  return new Date(value).toLocaleString(undefined, {
+    day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit'
+  });
+}
 
 // Whatever the student sheets asked for and has not been enrolled yet. Batch
 // IDs are resolved when this loads, so uploading batches later is enough.
@@ -34,11 +76,16 @@ async function loadPending() {
   }
 
   if (!data.total) {
-    pendingEl.style.display = 'none';
+    // The button stays on the page, disabled: this is the one thing the page is
+    // for, and hiding it reads as the feature having gone away
+    pendingTitle.textContent = 'From the student sheets — nobody waiting';
+    pendingNote.textContent =
+      'Every student on record is already in the batch their sheet named. ' +
+      'Upload more students and they appear here, ready to enrol.';
+    pendingBtn.disabled = true;
     return;
   }
 
-  pendingEl.style.display = 'block';
   pendingTitle.textContent = 'From the student sheets — ' + data.total + ' student(s) waiting';
 
   pendingNote.textContent = '';
@@ -56,6 +103,7 @@ async function loadPending() {
 }
 
 async function enrolPending() {
+  const token = claimStatus();
   pendingBtn.disabled = true;
   clearErrors();
   downloadRow.style.display = 'none';
@@ -72,6 +120,8 @@ async function enrolPending() {
 
   if (res.status === 401) return location.href = '/login';
   const body = await res.json().catch(() => ({}));
+
+  if (!ownsStatus(token)) return;
 
   if (!res.ok) {
     const count = res.status === 422 ? showValidationErrors(body) : 0;
@@ -120,12 +170,21 @@ function showErrors(title, messages) {
 // many, and how many are left, is the difference between knowing what to do
 // next and having to work it out from the result file. The rest stay in the
 // waiting list above, so there is nothing to re-upload.
+//
+// The count is only what this portal was told. One request enrols a whole
+// batch, so a request that wrote some students and then failed reports nothing
+// — NSDC can be holding students this page believes never went. Which is why
+// the wording stops short of claiming none did, and points at the page that
+// reads NSDC back to find out.
 function howFar(data) {
   const done = data.stoppedAfter || 0;
   const left = Math.max(0, (data.total || 0) - done);
-  if (done === 0) return 'Nobody was enrolled — all ' + data.total + ' are still waiting above.';
-  return done + ' of ' + data.total + ' students were enrolled before it stopped; ' +
-    left + ' still waiting above. The result sheet lists exactly which.';
+  if (done === 0) {
+    return 'No enrolment was confirmed, so all ' + data.total + ' are still waiting above. ' +
+      'NSDC may still have taken some before it stopped — "Enrolled so far" reads NSDC back and says which.';
+  }
+  return done + ' of ' + data.total + ' students were confirmed enrolled before it stopped; ' +
+    left + ' still waiting above. NSDC may have taken more than that — "Enrolled so far" reads NSDC back and says which.';
 }
 
 function showRunning(data) {
@@ -152,6 +211,7 @@ function showRunning(data) {
 
 async function poll() {
   clearTimeout(pollTimer);
+  const token = claimStatus();
   let data;
   try {
     const res = await fetch('/api/enroll/status');
@@ -162,6 +222,8 @@ async function poll() {
     return;
   }
 
+  if (!ownsStatus(token)) return;
+
   if (data.state === 'running') {
     pendingBtn.disabled = true;
     showRunning(data);
@@ -171,8 +233,8 @@ async function poll() {
   }
 
   loadPending();
+  showNsdcCount();
 
-  reloadLastRun();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.enrolled + ' enrolled, ' + data.alreadyEnrolled +
@@ -207,6 +269,8 @@ async function poll() {
 // On page load, pick up any in-progress or completed enrolment
 poll();
 loadPending();
+// And say what NSDC actually holds, which is the only verified count
+showNsdcCount();
 
 // A handler that throws used to leave the page sitting on "Checking the
 // sheet…" with no way to tell whether anything had happened.

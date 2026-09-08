@@ -14,13 +14,15 @@ const previewTitle = document.getElementById('previewTitle');
 const previewBody = document.getElementById('previewBody');
 let pollTimer = null;
 
-const reloadLastRun = showLastRun(data => {
-  const s = data.students;
-  if (!s || !s.total) return '';
-  const covered = listBatches(s.batches);
-  return `${s.total} student(s) uploaded so far, most recently on ${onDate(s.lastAt)}` +
-    (covered ? `. Batches covered: ${covered}.` : '.');
-});
+// The poll that runs on page load and a button click can both be waiting on a
+// response at once, and a late poll used to repaint the finished-run status
+// over whatever the click had just put there — leaving, say, a green "2
+// created" above a red "nothing to create". Every render claims the status area
+// first; a response that no longer owns it is dropped.
+let statusToken = 0;
+const claimStatus = () => ++statusToken;
+const ownsStatus = token => token === statusToken;
+
 
 
 
@@ -40,6 +42,7 @@ function showValidationErrors(body) {
 
 // Builds the request bodies and shows them without contacting NSDC at all
 async function previewPayload() {
+  const token = claimStatus();
   const file = fileInput.files && fileInput.files[0];
   if (!file) {
     showStatus('error', 'Choose a .csv or .xlsx file first.');
@@ -67,7 +70,10 @@ async function previewPayload() {
   if (res.status === 401) return location.href = '/login';
 
   const body = await res.json().catch(() => ({}));
+
   previewBtn.disabled = false;
+
+  if (!ownsStatus(token)) return;
 
   if (res.status === 422) {
     const count = showValidationErrors(body);
@@ -110,6 +116,7 @@ function showErrors(title, messages) {
 }
 
 async function startUpload() {
+  const token = claimStatus();
   const file = fileInput.files && fileInput.files[0];
   if (!file) {
     showStatus('error', 'Choose a .csv or .xlsx file first.');
@@ -137,6 +144,8 @@ async function startUpload() {
   if (res.status === 401) return location.href = '/login';
 
   const body = await res.json().catch(() => ({}));
+
+  if (!ownsStatus(token)) return;
 
   if (res.status === 422) {
     // Validation failed — nothing was sent to NSDC
@@ -195,6 +204,7 @@ function showRunning(data) {
 
 async function poll() {
   clearTimeout(pollTimer);
+  const token = claimStatus();
   let data;
   try {
     const res = await fetch('/api/upload/status');
@@ -204,6 +214,8 @@ async function poll() {
     pollTimer = setTimeout(poll, 3000);
     return;
   }
+
+  if (!ownsStatus(token)) return;
 
   if (data.dryRun) {
     banner.style.display = 'block';
@@ -220,7 +232,6 @@ async function poll() {
 
   uploadBtn.disabled = false;
 
-  reloadLastRun();
 
   if (data.state === 'done') {
     let message = 'Done — ' + data.created + ' new, ' + data.duplicates +

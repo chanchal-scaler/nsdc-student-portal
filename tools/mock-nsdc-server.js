@@ -33,11 +33,71 @@ app.use(express.urlencoded({ extended: false }));
 // portal can be watched reacting to one and recovering from it.
 let serviceDown = false;
 
+// Going down part way through a run is the case worth rehearsing, and clicking
+// the switch fast enough is luck: a batch upload is one request per row, but an
+// enrolment is one request per batch, so the whole run can be over in a second.
+// This counts real requests down and takes the service out mid-run by itself.
+let downAfter = null;
+
 app.use((req, res, next) => {
-    if (!serviceDown || req.path.startsWith('/_mock')) return next();
+    if (req.path.startsWith('/_mock')) return next();
+
+    // Signing in costs three calls before a single student is sent — CSRF token,
+    // public key, login — and counting those would spend the budget on the way
+    // in and take the service down before the run started. Registration lives
+    // under the same prefix, so the exemption is by exact path, not prefix.
+    const HANDSHAKE = ['/api/user/v1', '/api/user/v1/getkey', '/api/user/v1/login'];
+
+    if (!serviceDown && downAfter !== null && !HANDSHAKE.includes(req.path)) {
+        // The budget is in students, and one enrolment or completion request
+        // carries many, so those endpoints spend it themselves — see spend()
+        const perStudentEndpoint =
+            req.path === '/api/thirdparty/v1/enroll/Candidate' ||
+            req.path === '/v1/candidates/candidate/pushBatchEachCandidate';
+
+        if (!perStudentEndpoint) {
+            if (downAfter <= 0) {
+                serviceDown = true;
+                downAfter = null;
+                log('down: budget spent, service is now down mid-run');
+            } else {
+                downAfter--;
+                log(`down after: ${downAfter} more student(s) will be served`);
+            }
+        }
+    }
+
+    if (!serviceDown) return next();
     log(`down: refused ${req.method} ${req.path}`);
     res.status(503).json({ message: 'Service Unavailable' });
 });
+
+/**
+ * Spends the "go down after N students" budget for a request that carries many
+ * students at once.
+ *
+ * An enrolment is one request per batch, so a budget counted in requests could
+ * only ever refuse a whole batch. Counted in students, the batch is enrolled up
+ * to the budget and the request then fails — which is what a real outage part
+ * way through a batch looks like: NSDC has some of them, the portal was told
+ * nothing succeeded.
+ *
+ * Returns how many of `count` may be served. Zero means the service has just
+ * gone down and the request should be refused.
+ */
+function spend(count) {
+    if (downAfter === null) return count;
+    if (downAfter <= 0) {
+        serviceDown = true;
+        downAfter = null;
+        log('down: budget spent, service is now down mid-run');
+        return 0;
+    }
+    const served = Math.min(count, downAfter);
+    downAfter -= served;
+    log(`down after: served ${served}, ${downAfter} more student(s) to go`);
+    return served;
+}
 
 // candidateId lookup keyed by email, so re-uploading a student behaves the way
 // NSDC does: no second record, the existing ID comes back in an error message.
@@ -202,9 +262,18 @@ app.post('/api/thirdparty/v1/enroll/Candidate', (req, res) => {
         return res.status(409).send('Candidates already enrolled in this batch');
     }
 
-    for (const id of fresh) {
+    const allowed = spend(fresh.length);
+
+    for (const id of fresh.slice(0, allowed)) {
         enrolledPairs.add(`${id}|${batchId}`);
         enrolments.push({ batchId, candidateId: id });
+    }
+
+    if (allowed < fresh.length) {
+        // Part of the batch really is enrolled, and the caller is told the
+        // request failed — the case the portal has to survive
+        log(`enrol batch ${batchId}: ${allowed} of ${fresh.length} enrolled, then went down`);
+        return res.status(503).json({ message: 'Service Unavailable' });
     }
 
     log(`enrol batch ${batchId}: ${fresh.length} candidate(s) enrolled`);
@@ -233,7 +302,17 @@ app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
         if (!candidate.assessmentDetails || !candidate.certificationDetails) {
             return res.status(400).json({ message: `Missing assessment or certification details for ${candidate.candidateID}` });
         }
+    }
+
+    const allowed = spend(candidates.length);
+
+    for (const candidate of candidates.slice(0, allowed)) {
         completions.push({ batchId, candidateId: candidate.candidateID, body: candidate });
+    }
+
+    if (allowed < candidates.length) {
+        log(`batch ${batchId}: ${allowed} of ${candidates.length} results submitted, then went down`);
+        return res.status(503).json({ message: 'Service Unavailable' });
     }
 
     log(`batch ${batchId}: results submitted for ${candidates.length} candidate(s)`);
@@ -242,6 +321,57 @@ app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
 
 // Test helpers, not part of the real API
 // A page with buttons rather than URLs to visit: a tab left open on
+/**
+ * The candidate list the portal reads batch membership from, in the shape the
+ * real endpoint answers with: a `data` array of candidates, each carrying its
+ * own `batches[]`, plus a `pagination.count`. Built from what this process has
+ * been asked to register, enrol and complete, so a full run through the portal
+ * produces a list that matches it.
+ */
+app.post('/v1/candidates/pmkvy/candidates/list', (req, res) => {
+    const pageNo = Math.max(1, Number(req.query.pageNo) || 1);
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 500));
+    const onlyInBatch = String(req.query.isEnrolledToBatch || '').toLowerCase() === 'yes';
+
+    const candidates = registrations.map(registration => {
+        const memberships = enrolments
+            .filter(e => e.candidateId === registration.candidateId)
+            .map(e => {
+                const batch = createdBatches.find(b => String(b.batchId) === String(e.batchId));
+                return {
+                    batchId: Number(e.batchId),
+                    // The real service leaves the name out here, so this does too
+                    batchName: '',
+                    batchStartDate: batch && batch.body && batch.body.batchStartDate || null,
+                    batchEndDate: batch && batch.body && batch.body.batchEndDate || null,
+                    isCertified: completions.some(c =>
+                        c.candidateId === registration.candidateId &&
+                        String(c.batchId) === String(e.batchId)) || null
+                };
+            });
+
+        const personal = registration.body && registration.body.personalDetails || {};
+        const contact = registration.body && registration.body.contactDetails || {};
+
+        return {
+            candidateId: registration.candidateId,
+            userName: registration.candidateId,
+            personalDetails: personal,
+            contactDetails: contact,
+            batches: memberships,
+            isEnrolledToBatch: memberships.length > 0 ? 'Yes' : 'No'
+        };
+    }).filter(candidate => !onlyInBatch || candidate.batches.length > 0);
+
+    const start = (pageNo - 1) * limit;
+    log(`list page ${pageNo} (limit ${limit}${onlyInBatch ? ', in a batch only' : ''}) -> ${Math.max(0, Math.min(limit, candidates.length - start))} of ${candidates.length}`);
+
+    res.json({
+        data: candidates.slice(start, start + limit),
+        pagination: { count: candidates.length, pageNo, limit }
+    });
+});
+
 // /_mock/down would flip the service off again on every reload, which is
 // exactly the confusion this is meant to rehearse, not cause.
 app.get('/_mock', (_req, res) => {
@@ -267,6 +397,19 @@ app.get('/_mock', (_req, res) => {
 </div>
 <form method="POST" action="/_mock/down" style="display:inline"><button class="stop">Take it down</button></form>
 <form method="POST" action="/_mock/up" style="display:inline"><button class="start">Bring it back</button></form>
+<form method="POST" action="/_mock/down-after" style="margin-top:1rem">
+  <label>Go down by itself after
+    <input type="number" name="requests" value="5" min="0" max="1000" style="width:5rem">
+    more student(s)</label>
+  <button class="stop">Arm it</button>
+</form>
+<p style="margin-top:0.5rem;font-size:0.8125rem;color:#6b7280">
+  For a run that stops part way: arm it, then start the upload. The budget is
+  counted in students, so arming with 5 lets 5 students through — a registration
+  each, or the first 5 of a batch being enrolled — and then the service goes
+  down. Signing in does not count against it.
+  ${downAfter === null ? 'Not armed.' : `Armed — ${downAfter} more request(s) will be served.`}
+</p>
 <table>
   <tr><td>candidates registered</td><td>\${registrations.length}</td></tr>
   <tr><td>batches created</td><td>\${createdBatches.length}</td></tr>
@@ -281,11 +424,21 @@ app.post('/_mock/down', (_req, res) => {
     res.redirect('/_mock');
 });
 app.post('/_mock/up', (_req, res) => {
+    downAfter = null;
     serviceDown = false;
     log('up: answering normally again');
     res.redirect('/_mock');
 });
+app.post('/_mock/down-after', (req, res) => {
+    const requests = Number(req.body && req.body.requests);
+    downAfter = Number.isFinite(requests) && requests >= 0 ? Math.floor(requests) : 1;
+    serviceDown = false;
+    log(`armed: going down after ${downAfter} more request(s)`);
+    res.redirect('/_mock');
+});
+
 app.get('/_mock/state', (_req, res) => res.json({
+    downAfter,
     serviceDown,
     candidates: registrations.length,
     batches: createdBatches.length,
