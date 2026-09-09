@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Create Batches — NSDC Student Portal</title>
+<title>Complete Batches — NSDC Student Portal</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -85,34 +85,31 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches" class="active">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a><a href="/failures">Failures</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete" class="active">Completion</a><a href="/failures">Failures</a></nav>
     <div class="header">
-      <h1>Create batches</h1>
+      <h1>Mark batch completed</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
     </div>
 
     <div class="card">
       <div class="banner" id="banner"></div>
 
-      <p>Upload a sheet of batches. Each row is created on Skill India (NSDC) and comes back with a batch ID.</p>
+      <p>Upload a sheet of students, the batch they finished, and whether they passed. Each batch's results are submitted to Skill India (NSDC), which completes the batch and issues certificates.</p>
 
       <ul class="rules">
-        <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB.</li>
-        <li>All 21 batch columns are required — use the template below to get the exact names. There is no <code>size</code> column: the size is counted from the students already uploaded for that batch.</li>
-        <li><strong>Upload the students first.</strong> A batch nobody has been uploaded for is not created, since its size would be zero.</li>
-        <li>A batch whose name already exists is not created again. NSDC does not refuse a repeated name — it quietly makes "Academy Sep26(2)" — so the portal stops it here.</li>
-        <li><strong>Dates must be readable, and <code>YYYY-MM-DD</code> is safest.</strong> <code>2026-09-01</code>, <code>01-Sep-2026</code> and <code>9/1/2026 2:00:00</code> all work — read the same way the existing batch script reads them.</li>
-        <li><strong>Batch names read as &lt;Programme&gt; &lt;Month&gt;&lt;YY&gt;</strong> — <code>Academy Sep26</code>, <code>DSML July27</code>. Programme is one of Academy, DSML, DevOps, AIML, SST, OPGP, SSB.</li>
-        <li><code>sector</code>, <code>schemeType</code> and <code>createdSource</code> are fixed values the script always sends; they are not columns in the sheet.</li>
-        <li><strong>Preview payload only</strong> validates the sheet and shows the exact JSON that would be sent to NSDC — no request is made and no batch is created.</li>
-        <li>NSDC renames a clashing batch, so "Academy Dec25" can come back as "Academy Dec25(2)". The result sheet shows the name NSDC actually used.</li>
+        <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB. Three columns: <code>email</code>, <code>batchName</code> and <code>result</code>.</li>
+        <li><code>result</code> takes <code>1</code> or <code>0</code>, as the existing sheet does; <code>Pass</code>/<code>Fail</code> and <code>true</code>/<code>false</code> also work.</li>
+        <li>A pass is sent as 90% attendance, 90% assessment, grade A and certified; a fail as 50%, 50%, grade D and not certified. These are the fixed figures the existing script has always sent — the sheet carries no marks of its own.</li>
+        <li>Results are only sent for a student the portal has recorded as enrolled in that batch.</li>
+        <li>Students whose results were already submitted are skipped, so the same sheet can be run again safely.</li>
+        <li><strong>Preview payload only</strong> shows the exact JSON that would be sent — no request is made and no batch is completed.</li>
       </ul>
 
       <div class="file-row">
         <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
         <button class="btn btn-secondary" id="previewBtn">Preview payload only</button>
-        <button class="btn btn-primary" id="uploadBtn">Create batches</button>
-        <a class="link-template" href="/api/batches/template">Download template</a>
+        <button class="btn btn-primary" id="uploadBtn">Submit results</button>
+        <a class="link-template" href="/api/complete/template">Download template</a>
       </div>
 
       <div class="status" id="status"></div>
@@ -123,19 +120,18 @@
       </div>
 
       <div class="download-row" id="downloadRow">
-        <a class="btn btn-success" href="/api/batches/result">Download result CSV</a>
+        <a class="btn btn-success" href="/api/complete/result">Download result CSV</a>
         <div class="meta" id="fileMeta"></div>
       </div>
-
 
       <div class="preview" id="preview">
         <h2 id="previewTitle">Payload preview</h2>
         <pre id="previewBody"></pre>
-        <a class="link-template" href="/api/batches/preview/file" id="previewDownload">Download all payloads as JSON</a>
+        <a class="link-template" href="/api/complete/preview/file" id="previewDownload">Download all payloads as JSON</a>
       </div>
     </div>
   </div>
 
-  <script src="/batches.js"></script>
+  <script src="/complete.js"></script>
 </body>
 </html>
