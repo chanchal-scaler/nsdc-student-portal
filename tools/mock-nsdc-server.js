@@ -107,6 +107,27 @@ const registrations = [];
 
 const issuedSecrets = new Set();
 
+// A row NSDC refuses while the run carries on is the other half of what the
+// portal has to survive, and nothing well-formed gets refused by chance. Set a
+// string here and any register/create/enrol/results request whose body carries
+// it comes back 400, so that path can be exercised on purpose.
+let refuseMatching = null;
+
+/**
+ * 400s the request when the armed string appears anywhere in its body.
+ * Returns true when it has answered, so the caller stops.
+ */
+function refusedOnPurpose(req, res) {
+    if (!refuseMatching) return false;
+    const body = JSON.stringify(req.body || {});
+    if (!body.includes(refuseMatching)) return false;
+    log(`refused on purpose: body carries "${refuseMatching}"`);
+    res.status(400).json({
+        message: `Mandatory field(s) missing or invalid: refused on purpose because the request carries "${refuseMatching}"`
+    });
+    return true;
+}
+
 function log(...args) {
     console.log(new Date().toISOString().slice(11, 19), ...args);
 }
@@ -166,6 +187,8 @@ app.post('/api/user/v1/register/Candidate/v1', (req, res) => {
         return res.status(412).json({ message: 'CSRF token missing' });
     }
 
+    if (refusedOnPurpose(req, res)) return;
+
     const { personalDetails, contactDetails } = req.body || {};
 
     // The same fields the real service insists on
@@ -207,6 +230,8 @@ app.post('/api/batch/v1/create', (req, res) => {
     if (!req.get('X-Csrf-Token')) {
         return res.status(412).json({ message: 'CSRF token missing' });
     }
+
+    if (refusedOnPurpose(req, res)) return;
 
     const body = req.body || {};
     const missing = [];
@@ -250,6 +275,8 @@ app.post('/api/thirdparty/v1/enroll/Candidate', (req, res) => {
         return res.status(412).json({ message: 'CSRF token missing' });
     }
 
+    if (refusedOnPurpose(req, res)) return;
+
     const { batchId, candidateIds } = req.body || {};
     if (!batchId || !Array.isArray(candidateIds) || candidateIds.length === 0) {
         return res.status(400).json({ message: 'batchId and a non-empty candidateIds array are required' });
@@ -289,6 +316,8 @@ app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
     if (!req.get('X-Csrf-Token')) {
         return res.status(412).json({ message: 'CSRF token missing' });
     }
+    if (refusedOnPurpose(req, res)) return;
+
 
     const { batchId, candidates } = req.body || {};
     if (!batchId || !Array.isArray(candidates) || candidates.length === 0) {
@@ -397,6 +426,19 @@ app.get('/_mock', (_req, res) => {
 </div>
 <form method="POST" action="/_mock/down" style="display:inline"><button class="stop">Take it down</button></form>
 <form method="POST" action="/_mock/up" style="display:inline"><button class="start">Bring it back</button></form>
+<form method="POST" action="/_mock/refuse" style="margin-top:1rem">
+  <label>Refuse any request carrying
+    <input name="value" value="${refuseMatching || ''}" placeholder="e.g. a batch name" style="width:14rem">
+  </label>
+  <button class="stop">Refuse it</button>
+</form>
+<p style="margin-top:0.5rem;font-size:0.8125rem;color:#6b7280">
+  For one row being refused while the run carries on: put a batch name or a
+  student email here, then upload. Anything whose body carries that string comes
+  back 400 and lands on the portal's failures page with its payload.
+  ${refuseMatching === null ? 'Refusing nothing.' : `Refusing anything carrying "${refuseMatching}".`}
+</p>
+
 <form method="POST" action="/_mock/down-after" style="margin-top:1rem">
   <label>Go down by itself after
     <input type="number" name="requests" value="5" min="0" max="1000" style="width:5rem">
@@ -437,7 +479,25 @@ app.post('/_mock/down-after', (req, res) => {
     res.redirect('/_mock');
 });
 
+app.post('/_mock/refuse', (req, res) => {
+    const value = (req.body && req.body.value) || (req.query && req.query.value) || '';
+    refuseMatching = String(value).trim() || null;
+    log(refuseMatching
+        ? `refusing anything carrying "${refuseMatching}"`
+        : 'refusing nothing again');
+    // The control page posts a form; curl asks for JSON
+    if ((req.get('Accept') || '').includes('text/html')) return res.redirect('/_mock');
+    res.json({ ok: true, refuseMatching });
+});
+
+app.post('/_mock/allow', (_req, res) => {
+    refuseMatching = null;
+    log('refusing nothing again');
+    res.json({ ok: true, refuseMatching: null });
+});
+
 app.get('/_mock/state', (_req, res) => res.json({
+    refuseMatching,
     downAfter,
     serviceDown,
     candidates: registrations.length,
@@ -451,6 +511,7 @@ app.get('/_mock/batches', (_req, res) => res.json(createdBatches));
 app.get('/_mock/enrolments', (_req, res) => res.json(enrolments));
 app.get('/_mock/completions', (_req, res) => res.json(completions));
 app.all('/_mock/reset', (_req, res) => {
+    refuseMatching = null;
     candidatesByEmail.clear();
     registrations.length = 0;
     batchesByName.clear();

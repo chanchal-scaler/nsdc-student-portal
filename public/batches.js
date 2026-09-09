@@ -125,6 +125,17 @@ function clearErrors() {
   errorList.textContent = '';
 }
 
+// NSDC's own reason for every row it refused. Without this a failed run reads
+// as "2 failed" and nothing else, and the reason has to be dug out of the
+// result CSV.
+function showFailureReasons(data) {
+  if (!data.failures || data.failures.length === 0) return;
+  showErrors('Why these batches were not created:', data.failures.map(f =>
+    (f.row ? 'Row ' + f.row + ' — ' : '') +
+    (f.batchName ? f.batchName + ': ' : '') +
+    (f.error || 'NSDC gave no reason')));
+}
+
 function showErrors(title, messages) {
   errorsTitle.textContent = title;
   errorList.textContent = '';
@@ -260,6 +271,7 @@ async function poll() {
     let message = 'Done — ' + data.created + ' created, ' + data.failed + ' failed.';
     if (!data.dbEnabled) message += ' (Not stored in the database: DATABASE_URL is not set.)';
     showStatus(data.failed > 0 ? 'error' : 'done', message);
+    showFailureReasons(data);
 
     if (data.resultReady) {
       downloadRow.style.display = 'block';
@@ -271,6 +283,7 @@ async function poll() {
     if (data.serviceDown) {
       showStatus('error', 'The last run: Skill India (NSDC) was not responding. ' + howFar(data) +
         ' Try again once it is back — re-uploading the same sheet picks up where this left off, so nothing is sent twice.');
+      showFailureReasons(data);
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
@@ -278,10 +291,12 @@ async function poll() {
     if (data.stoppedAfter !== null) {
       showStatus('error', 'The last run stopped early. ' + howFar(data) +
         ' Re-uploading the same sheet picks up where this left off.');
+      showFailureReasons(data);
       if (data.resultReady) downloadRow.style.display = 'block';
       return;
     }
     showStatus('error', 'Upload failed: ' + (data.error || 'Unknown error'));
+    showFailureReasons(data);
     if (data.resultReady) downloadRow.style.display = 'block';
   }
 }

@@ -15,7 +15,9 @@ import { enrollCandidates } from './lib/nsdc-enrollments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
-    allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled } from './lib/db.js';
+    allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
+    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure } from './lib/db.js';
+import { verifyPassword } from './lib/passwords.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -156,7 +158,37 @@ function resetJob() {
     job.fileName = null;
 }
 
-function startDownloadJob() {
+
+/**
+ * Records one failed NSDC call, for the failures page.
+ *
+ * Everything the page shows comes from here: the endpoint the lib actually
+ * called, the body it sent, NSDC's own answer, the sheet row it was for, and
+ * the signed-in person whose upload it was. Never awaited by a run — a failure
+ * that cannot be recorded must not stop the rest of the sheet.
+ */
+function noteFailure({ flow, startedBy, sourceFile, row, kind = 'row-failed', subject, batchName, error, call, attempts }) {
+    if (!dbEnabled) return;
+    const description = call || (error && error.call) || null;
+    recordApiFailure({
+        userEmail: startedBy || null,
+        flow,
+        sourceFile: sourceFile || null,
+        rowNumber: row && Number.isInteger(row.rowNumber) ? row.rowNumber : null,
+        subject: subject || (row ? row.email || row.batchName || null : null),
+        batchName: batchName || (row ? row.batchName || null : null),
+        endpoint: description ? description.endpoint : 'unknown',
+        method: description ? description.method : 'POST',
+        httpStatus: description ? description.httpStatus : null,
+        kind,
+        errorMessage: typeof error === 'string' ? error : (error && error.message) || (row && row.error) || null,
+        requestPayload: description ? description.requestPayload : null,
+        responseBody: description ? description.responseBody : null,
+        attempts: Number.isInteger(attempts) ? attempts : (row && Number.isInteger(row.attempts) ? row.attempts : null)
+    }).catch(err => console.error('Could not record the failure:', err.message));
+}
+
+function startDownloadJob(startedBy) {
     // Clear any previous run (and its CSV) before starting a fresh one
     resetJob();
 
@@ -190,6 +222,7 @@ function startDownloadJob() {
         job.state = 'error';
         job.finishedAt = new Date().toISOString();
         job.error = err.message;
+        noteFailure({ flow: 'download', startedBy, kind: 'run-stopped', error: err });
         console.error('Download job failed:', err);
     });
 }
@@ -357,7 +390,7 @@ function studentsLeft(students, collected) {
         }));
 }
 
-function startUploadJob(students, sourceFileName) {
+function startUploadJob(students, sourceFileName, startedBy) {
     resetUpload();
 
     upload.state = 'running';
@@ -381,6 +414,12 @@ function startUploadJob(students, sourceFileName) {
         },
         onResult: async result => {
             collected.push(result);
+            if (!result.candidateId) {
+                noteFailure({
+                    flow: 'students', startedBy, sourceFile: sourceFileName,
+                    row: result, subject: result.email, error: result.error, call: result.call
+                });
+            }
             if (!result.candidateId || isDryRun) return;
             try {
                 await saveCandidate({
@@ -431,6 +470,13 @@ function startUploadJob(students, sourceFileName) {
         upload.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         upload.error = upload.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
         upload.stoppedAfter = collected.length;
+        // The call the run gave up on. Recorded as its own entry: the row
+        // failures above say which rows NSDC refused, this says why the run
+        // stopped touching the rest of the sheet.
+        noteFailure({
+            flow: 'students', startedBy, sourceFile: sourceFileName,
+            kind: 'run-stopped', error: err
+        });
         recordRun({
             flow: 'students',
             sourceFile: sourceFileName,
@@ -500,6 +546,8 @@ const batchJob = {
     error: null,
     stoppedAfter: null,
     serviceDown: false,
+    // Why rows failed, so the page can say it rather than only the result CSV
+    failures: [],
     resultFile: null,
     resultFileName: null
 };
@@ -524,6 +572,7 @@ function resetBatchJob() {
     batchJob.error = null;
     batchJob.stoppedAfter = null;
     batchJob.serviceDown = false;
+    batchJob.failures = [];
     batchJob.resultFile = null;
     batchJob.resultFileName = null;
 }
@@ -553,7 +602,7 @@ function batchesLeft(ready, collected) {
         .map(({ size, rowNumber, ...row }) => row);
 }
 
-function startBatchJob({ ready, blocked }, sourceFileName) {
+function startBatchJob({ ready, blocked }, sourceFileName, startedBy) {
     resetBatchJob();
 
     batchJob.state = 'running';
@@ -561,6 +610,9 @@ function startBatchJob({ ready, blocked }, sourceFileName) {
     batchJob.fileName = sourceFileName;
     batchJob.total = ready.length;
     batchJob.failed = blocked.length;
+    batchJob.failures = blocked.map(b => ({
+        row: b.rowNumber, batchName: b.batchName, error: b.error
+    }));
 
     const collected = [];
 
@@ -575,7 +627,18 @@ function startBatchJob({ ready, blocked }, sourceFileName) {
         },
         onResult: async result => {
             collected.push(result);
-            if (!result.batchId) return;
+            if (!result.batchId) {
+                batchJob.failures.push({
+                    row: result.rowNumber,
+                    batchName: result.batchName,
+                    error: result.error
+                });
+                noteFailure({
+                    flow: 'batches', startedBy, sourceFile: sourceFileName,
+                    row: result, subject: result.batchName, error: result.error, call: result.call
+                });
+                return;
+            }
             try {
                 await saveBatch({
                     batchId: result.batchId,
@@ -620,6 +683,13 @@ function startBatchJob({ ready, blocked }, sourceFileName) {
         batchJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         batchJob.error = batchJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
         batchJob.stoppedAfter = collected.length;
+        // The call the run gave up on. Recorded as its own entry: the row
+        // failures above say which rows NSDC refused, this says why the run
+        // stopped touching the rest of the sheet.
+        noteFailure({
+            flow: 'batches', startedBy, sourceFile: sourceFileName,
+            kind: 'run-stopped', error: err
+        });
         recordRun({
             flow: 'batches',
             sourceFile: sourceFileName,
@@ -767,7 +837,7 @@ function enrolmentsLeft(groups, collected, unresolved) {
     return left;
 }
 
-function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
+function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, startedBy) {
     resetEnrollJob();
 
     const total = groups.reduce((n, g) => n + g.rows.length, 0);
@@ -793,7 +863,14 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
         },
         onResult: async result => {
             collected.push(result);
-            if (result.status === 'FAILED') return;
+            if (result.status === 'FAILED') {
+                noteFailure({
+                    flow: 'enrolment', startedBy, sourceFile: sourceFileName,
+                    row: result, subject: result.email, batchName: result.batchName,
+                    error: result.error, call: result.call
+                });
+                return;
+            }
             try {
                 await saveEnrollment({
                     candidateId: result.candidateId,
@@ -837,6 +914,13 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName) {
         enrollJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         enrollJob.error = enrollJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
         enrollJob.stoppedAfter = collected.length;
+        // The call the run gave up on. Recorded as its own entry: the row
+        // failures above say which rows NSDC refused, this says why the run
+        // stopped touching the rest of the sheet.
+        noteFailure({
+            flow: 'enrolment', startedBy, sourceFile: sourceFileName,
+            kind: 'run-stopped', error: err
+        });
         recordRun({
             flow: 'enrolment',
             sourceFile: sourceFileName,
@@ -876,7 +960,7 @@ const syncJob = {
     error: null
 };
 
-function startSyncJob(batches) {
+function startSyncJob(batches, startedBy) {
     syncJob.state = 'running';
     syncJob.startedAt = new Date().toISOString();
     syncJob.finishedAt = null;
@@ -930,6 +1014,7 @@ function startSyncJob(batches) {
         syncJob.finishedAt = new Date().toISOString();
         syncJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         syncJob.error = syncJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
+        noteFailure({ flow: 'nsdc-read', startedBy, sourceFile: null, kind: 'run-stopped', error: err });
         try {
             await saveNsdcSync({
                 startedAt: syncJob.startedAt,
@@ -954,17 +1039,47 @@ app.get('/login', (req, res) => {
     res.sendFile(path.join(__dirname, 'views', 'login.html'));
 });
 
-app.post('/login', (req, res) => {
+/**
+ * Who this email and password belong to, or null.
+ *
+ * A login of our own (portal_users) is checked first; the LOGIN_EMAIL pair in
+ * the environment still works, so a portal with no rows in that table — or no
+ * database at all — is not locked out.
+ */
+async function authenticateUser(email, password) {
+    if (typeof email !== 'string' || typeof password !== 'string') return null;
+    const address = email.trim().toLowerCase();
+
+    if (dbEnabled) {
+        try {
+            const user = await findPortalUser(address);
+            if (user && verifyPassword(password, user.password_hash)) {
+                return { email: user.email, label: user.label || null, source: 'portal_users' };
+            }
+        } catch (err) {
+            // A database that is unreachable must not lock out the env login
+            console.error('Could not check the stored logins:', err.message);
+        }
+    }
+
+    if (safeEqual(address, LOGIN_EMAIL.toLowerCase()) && safeEqual(password, LOGIN_PASSWORD)) {
+        return { email: LOGIN_EMAIL.toLowerCase(), label: 'Shared login', source: 'environment' };
+    }
+
+    return null;
+}
+
+app.post('/login', async (req, res) => {
     const ip = req.ip;
     if (isRateLimited(ip)) {
         return res.redirect('/login?error=' + encodeURIComponent('Too many attempts. Try again in 15 minutes.'));
     }
 
     const { email, password } = req.body || {};
-    if (typeof email === 'string' && typeof password === 'string' &&
-        safeEqual(email.trim().toLowerCase(), LOGIN_EMAIL.toLowerCase()) &&
-        safeEqual(password, LOGIN_PASSWORD)) {
+    const user = await authenticateUser(email, password);
+    if (user) {
         loginAttempts.delete(ip);
+        if (user.source === 'portal_users') noteLogin(user.email).catch(() => { /* best effort */ });
         // Rotate the session ID on login to prevent session fixation
         return req.session.regenerate(err => {
             if (err) {
@@ -972,6 +1087,10 @@ app.post('/login', (req, res) => {
                 return res.redirect('/login?error=' + encodeURIComponent('Login failed, please try again'));
             }
             req.session.loggedIn = true;
+            // Every run is recorded against this, so a failure can name the
+            // person whose upload it was
+            req.session.userEmail = user.email;
+            req.session.userLabel = user.label;
             res.redirect('/');
         });
     }
@@ -1001,7 +1120,7 @@ app.post('/api/download/start', requireLogin, (req, res) => {
     if (job.state === 'running') {
         return res.status(409).json({ error: 'A download is already in progress' });
     }
-    startDownloadJob();
+    startDownloadJob(req.session.userEmail);
     res.json({ started: true });
 });
 
@@ -1076,7 +1195,7 @@ app.post('/api/upload/students', requireLogin, sheetUpload.single('sheet'), asyn
         return res.status(400).json({ error: 'The sheet has no student rows' });
     }
 
-    startUploadJob(parsed.rows, req.file.originalname);
+    startUploadJob(parsed.rows, req.file.originalname, req.session.userEmail);
     res.json({ started: true, total: parsed.rows.length, ignoredColumns: parsed.ignoredColumns });
 });
 
@@ -1290,7 +1409,7 @@ app.post('/api/batches/upload', requireLogin, sheetUpload.single('sheet'), async
         });
     }
 
-    startBatchJob(prepared, req.file.originalname);
+    startBatchJob(prepared, req.file.originalname, req.session.userEmail);
     res.json({
         started: true,
         total: prepared.ready.length,
@@ -1312,6 +1431,7 @@ app.get('/api/batches/status', requireLogin, (req, res) => {
         error: batchJob.error,
         stoppedAfter: batchJob.stoppedAfter,
         serviceDown: Boolean(batchJob.serviceDown),
+        failures: batchJob.failures.slice(0, 20),
         resultReady: Boolean(batchJob.resultFile),
         resultFileName: batchJob.resultFileName,
         dbEnabled
@@ -1382,7 +1502,7 @@ app.post('/api/enroll/pending', requireLogin, async (req, res) => {
         ...r, status: 'NOT_FOUND', error: `No batch ID stored for "${r.batchName}" — create the batch first`
     }));
 
-    startEnrollJob({ groups: [...groups.values()], unresolved, skipped: [] }, 'pending list');
+    startEnrollJob({ groups: [...groups.values()], unresolved, skipped: [] }, 'pending list', req.session.userEmail);
     res.json({ started: true, total: ready.length, groups: groups.size, skipped: 0, unresolvedCount: unresolved.length });
 });
 
@@ -1489,7 +1609,7 @@ app.post('/api/history/sync', requireLogin, async (req, res) => {
         return res.status(400).json({ error: 'No batch has been created yet, so there is nothing to read' });
     }
 
-    startSyncJob(batches);
+    startSyncJob(batches, req.session.userEmail);
     res.json({ started: true, batches: batches.length });
 });
 
@@ -1569,6 +1689,112 @@ app.get('/api/runs/:id/remaining', requireLogin, async (req, res) => {
     res.setHeader('Content-Disposition',
         `attachment; filename="still_to_do_${run.flow}_run${id}.csv"`);
     res.send(csv);
+});
+
+/**
+ * The failures page: every NSDC call that did not go through.
+ *
+ * The four upload pages say a row failed; this says which endpoint refused it,
+ * when, what was sent, what came back, and whose upload it was.
+ */
+app.get('/failures', requireLogin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'views', 'failures.html'));
+});
+
+app.get('/api/failures', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so failures are not being recorded' });
+    }
+
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
+
+    // "Last 24 hours" and the like, as a filter the page can hand back
+    let since = null;
+    const hours = Number(req.query.hours);
+    if (Number.isFinite(hours) && hours > 0) {
+        since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+    }
+
+    try {
+        const page = await apiFailures({
+            limit,
+            offset,
+            flow: req.query.flow || null,
+            userEmail: req.query.user || null,
+            search: req.query.q ? String(req.query.q).trim() : null,
+            since
+        });
+        res.json({ ...page, signedInAs: req.session.userEmail || null });
+    } catch (err) {
+        res.status(500).json({ error: `Could not read the failures: ${err.message}` });
+    }
+});
+
+/**
+ * The same list as a sheet, for sending on to whoever has to fix the data.
+ * The payload is one JSON column rather than exploded into columns: which
+ * fields exist depends on which flow failed.
+ */
+app.get('/api/failures/export/csv', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so failures are not being recorded' });
+    }
+
+    let page;
+    try {
+        page = await apiFailures({
+            limit: 100,
+            offset: 0,
+            flow: req.query.flow || null,
+            userEmail: req.query.user || null,
+            search: req.query.q ? String(req.query.q).trim() : null
+        });
+    } catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+
+    const full = await Promise.all(page.failures.map(f => apiFailure(f.id)));
+    const headers = ['id', 'occurredAt', 'userEmail', 'flow', 'sourceFile', 'rowNumber',
+        'subject', 'batchName', 'endpoint', 'method', 'httpStatus', 'kind',
+        'errorMessage', 'attempts', 'requestPayload', 'responseBody'];
+    const lines = [headers.join(',')];
+    for (const failure of full.filter(Boolean)) {
+        lines.push(headers.map(h => csvCell(
+            h === 'requestPayload' && failure[h] ? JSON.stringify(failure[h]) : failure[h]
+        )).join(','));
+    }
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition',
+        `attachment; filename="nsdc_failures_${new Date().toISOString().replace(/[:.]/g, '-')}.csv"`);
+    res.send(lines.join('\n') + '\n');
+});
+
+/** One failure in full: the request body sent and the answer NSDC gave. */
+app.get('/api/failures/:id', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so failures are not being recorded' });
+    }
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) {
+        return res.status(400).json({ error: 'Not a failure id' });
+    }
+    try {
+        const failure = await apiFailure(id);
+        if (!failure) return res.status(404).json({ error: 'No such failure' });
+        res.json(failure);
+    } catch (err) {
+        res.status(500).json({ error: `Could not read that failure: ${err.message}` });
+    }
+});
+
+/** Who is signed in, for the header on every page. */
+app.get('/api/me', requireLogin, (req, res) => {
+    res.json({
+        email: req.session.userEmail || null,
+        label: req.session.userLabel || null
+    });
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));

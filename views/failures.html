@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Failures — NSDC Student Portal</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f3f4f6;
+    min-height: 100vh;
+    padding: 1rem;
+  }
+  .container { max-width: 1040px; margin: 3rem auto; }
+  .topnav { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 1.25rem;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.375rem; }
+  .topnav a { padding: 0.4rem 0.75rem; border-radius: 7px; font-size: 0.8125rem;
+    color: #4b5563; text-decoration: none; white-space: nowrap; }
+  .topnav a:hover { background: #f3f4f6; color: #111827; }
+  .topnav a.active { background: #fef2f2; color: #b91c1c; font-weight: 600; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.375rem; color: #111827; }
+  .whoami { font-size: 0.75rem; color: #6b7280; margin-top: 0.25rem; }
+  .header-right { display: flex; align-items: center; gap: 0.75rem; }
+  .logout button {
+    background: none; border: 1px solid #d1d5db; color: #374151;
+    padding: 0.4rem 0.9rem; border-radius: 8px; font-size: 0.8125rem; cursor: pointer;
+  }
+  .logout button:hover { background: #f9fafb; }
+  .card {
+    background: #fff; border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    padding: 2rem;
+  }
+  .card > p.lede { color: #6b7280; font-size: 0.9rem; margin-bottom: 1.25rem; }
+
+  .summary { background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 8px;
+    padding: 0.75rem 1rem; margin-bottom: 1.25rem; font-size: 0.8125rem; color: #075985; }
+
+  /* The filters. Which flow, whose upload, how far back — the three questions
+     asked when something has gone wrong and nobody knows whose it was. */
+  .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+    margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid #f3f4f6; }
+  .filters select, .filters input {
+    font: inherit; font-size: 0.8125rem; padding: 0.4rem 0.625rem;
+    border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #374151;
+  }
+  .filters input { min-width: 15rem; }
+  .filters button {
+    font-size: 0.8125rem; font-weight: 600; padding: 0.4rem 0.9rem; cursor: pointer;
+    border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #374151;
+  }
+  .filters button:hover { background: #f9fafb; }
+  .filters .spacer { flex: 1; }
+  .filters a.export { font-size: 0.8125rem; color: #1d4ed8; text-decoration: none; font-weight: 600; }
+  .filters a.export:hover { text-decoration: underline; }
+
+  /* One block per failed call. The head is the answer to "what failed and
+     whose was it"; the body is the evidence, folded away until asked for. */
+  .fail { border: 1px solid #fecaca; border-radius: 10px; margin-bottom: 0.75rem; overflow: hidden; }
+  .fail.stopped { border-color: #fde68a; }
+  .fail-head { background: #fef2f2; padding: 0.875rem 1rem; cursor: pointer;
+    display: flex; justify-content: space-between; gap: 0.75rem; align-items: baseline; flex-wrap: wrap; }
+  .fail.stopped .fail-head { background: #fffbeb; }
+  .fail-head:hover { filter: brightness(0.985); }
+  .fail-what { font-size: 0.9375rem; font-weight: 600; color: #7f1d1d; }
+  .fail.stopped .fail-what { color: #92400e; }
+  .fail-when { font-size: 0.75rem; color: #6b7280; white-space: nowrap; }
+  .fail-meta { font-size: 0.75rem; color: #6b7280; padding: 0 1rem 0.875rem;
+    background: #fef2f2; display: flex; gap: 0.75rem; flex-wrap: wrap; }
+  .fail.stopped .fail-meta { background: #fffbeb; }
+  .tag { font-size: 0.6875rem; font-weight: 600; padding: 0.125rem 0.5rem;
+    border-radius: 999px; white-space: nowrap; background: #fff; border: 1px solid #e5e7eb; color: #4b5563; }
+  .tag.flow { background: #eff6ff; border-color: #bfdbfe; color: #1e40af; }
+  .tag.who { background: #f5f3ff; border-color: #ddd6fe; color: #5b21b6; }
+  .tag.status { background: #fff1f2; border-color: #fecdd3; color: #9f1239; }
+  .tag.kind { background: #fffbeb; border-color: #fde68a; color: #92400e; }
+
+  /* The endpoint called and what NSDC said, on the row itself */
+  .fail-reason { padding: 0 1rem 0.875rem; background: #fef2f2; }
+  .fail-reason.stopped { background: #fffbeb; }
+  .fail-endpoint { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.75rem; color: #4b5563; word-break: break-all; margin-bottom: 0.25rem; }
+  .fail-message { font-size: 0.8125rem; color: #7f1d1d; }
+  .fail-reason.stopped .fail-message { color: #92400e; }
+  .fail-hint { font-size: 0.6875rem; color: #9ca3af; margin-top: 0.375rem; }
+  .fail.open .fail-hint { display: none; }
+
+  .fail-body { display: none; border-top: 1px solid #fee2e2; padding: 1rem; background: #fff; }
+  .fail.open .fail-body { display: block; }
+  .field { margin-bottom: 0.875rem; }
+  .field:last-child { margin-bottom: 0; }
+  .field h4 { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.03em;
+    color: #6b7280; font-weight: 600; margin-bottom: 0.25rem; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem;
+    color: #374151; word-break: break-all; }
+  pre.mono { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px;
+    padding: 0.75rem; overflow-x: auto; max-height: 22rem; white-space: pre; }
+  .loading-detail { font-size: 0.75rem; color: #9ca3af; }
+
+  .empty { font-size: 0.875rem; color: #6b7280; background: #f9fafb; border: 1px solid #e5e7eb;
+    border-radius: 8px; padding: 1.25rem; text-align: center; }
+  .error-box { font-size: 0.875rem; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca;
+    border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+  .more { display: none; margin: 1rem auto 0; padding: 0.5rem 1.125rem; cursor: pointer;
+    background: #fff; color: #374151; border: 1px solid #d1d5db; border-radius: 8px;
+    font-size: 0.8125rem; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/failures" class="active">Failures</a></nav>
+    <div class="header">
+      <div>
+        <h1>Failures</h1>
+        <div class="whoami" id="whoami"></div>
+      </div>
+      <div class="header-right">
+        <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
+      </div>
+    </div>
+
+    <div class="card">
+      <p class="lede">Every NSDC request that did not go through, newest first. Each one says which endpoint was called, at what time, whose upload it was, which sheet row it was for, the exact body that was sent and the exact answer NSDC gave back. Click a failure to read the payload.</p>
+
+      <div class="summary" id="summary">Loading…</div>
+
+      <div class="filters">
+        <select id="flowFilter"><option value="">Every flow</option></select>
+        <select id="userFilter"><option value="">Everyone</option></select>
+        <select id="hoursFilter">
+          <option value="">Any time</option>
+          <option value="24">Last 24 hours</option>
+          <option value="168">Last 7 days</option>
+          <option value="720">Last 30 days</option>
+        </select>
+        <input type="search" id="searchFilter" placeholder="Student email, batch, message, file…">
+        <button id="applyBtn">Apply</button>
+        <span class="spacer"></span>
+        <a class="export" id="exportLink" href="/api/failures/export/csv">Download as CSV</a>
+      </div>
+
+      <div id="list"></div>
+      <button class="more" id="moreBtn">Load older failures</button>
+    </div>
+  </div>
+
+  <script src="/failures.js"></script>
+</body>
+</html>
