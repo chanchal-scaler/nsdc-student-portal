@@ -29,6 +29,12 @@ const LOGIN_PASSWORD = process.env.LOGIN_PASSWORD;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const NSDC_USERNAME = process.env.NSDC_USERNAME;
 const NSDC_PASSWORD = process.env.NSDC_PASSWORD;
+// Uploads authenticate separately from downloads, so the upload side can be
+// switched off — by clearing NSDC_UPLOAD_PASSWORD — without stopping downloads.
+// The username falls back to NSDC_USERNAME; the password deliberately does not,
+// since falling back would leave uploads running after the password is cleared.
+const NSDC_UPLOAD_USERNAME = process.env.NSDC_UPLOAD_USERNAME || NSDC_USERNAME;
+const NSDC_UPLOAD_PASSWORD = process.env.NSDC_UPLOAD_PASSWORD;
 const TP_ID = process.env.TP_ID || 'TP155158';
 const DATA_DIR = path.join(__dirname, 'data');
 
@@ -40,6 +46,10 @@ if (!NSDC_PASSWORD) missing.push('NSDC_PASSWORD');
 if (missing.length > 0) {
     console.error(`Missing required environment variables: ${missing.join(', ')}`);
     process.exit(1);
+}
+
+if (!NSDC_UPLOAD_PASSWORD) {
+    console.warn('Uploads are off: NSDC_UPLOAD_PASSWORD is not set. Downloads still work.');
 }
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -404,8 +414,8 @@ function startUploadJob(students, sourceFileName, startedBy) {
     const collected = [];
 
     uploadStudents({
-        userName: NSDC_USERNAME,
-        password: NSDC_PASSWORD,
+        userName: NSDC_UPLOAD_USERNAME,
+        password: NSDC_UPLOAD_PASSWORD,
         students,
         onProgress: ({ processed, created, duplicates, failed }) => {
             upload.processed = processed;
@@ -618,8 +628,8 @@ function startBatchJob({ ready, blocked }, sourceFileName, startedBy) {
     const collected = [];
 
     uploadBatches({
-        userName: NSDC_USERNAME,
-        password: NSDC_PASSWORD,
+        userName: NSDC_UPLOAD_USERNAME,
+        password: NSDC_UPLOAD_PASSWORD,
         batches: ready,
         onProgress: ({ processed, created, failed }) => {
             batchJob.processed = processed;
@@ -853,8 +863,8 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
     const collected = [];
 
     enrollCandidates({
-        userName: NSDC_USERNAME,
-        password: NSDC_PASSWORD,
+        userName: NSDC_UPLOAD_USERNAME,
+        password: NSDC_UPLOAD_PASSWORD,
         groups,
         onProgress: ({ processed, enrolled, alreadyEnrolled, failed }) => {
             enrollJob.processed = processed;
@@ -1088,8 +1098,8 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
     const collected = [];
 
     submitAssessments({
-        userName: NSDC_USERNAME,
-        password: NSDC_PASSWORD,
+        userName: NSDC_UPLOAD_USERNAME,
+        password: NSDC_UPLOAD_PASSWORD,
         groups,
         onProgress: ({ processed, completed, failed }) => {
             assessJob.processed = processed;

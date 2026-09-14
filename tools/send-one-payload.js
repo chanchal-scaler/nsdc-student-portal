@@ -23,8 +23,10 @@ import forge from 'node-forge';
 import fetchCookieModule from 'fetch-cookie';
 
 const BASE_URL = process.env.NSDC_BASE_URL || 'https://adminservices.skillindiadigital.gov.in';
-const USERNAME = process.env.NSDC_USERNAME;
-const PASSWORD = process.env.NSDC_PASSWORD;
+// This tool writes, so it takes the upload credentials, falling back to the
+// download ones when the upload variables are not set.
+const USERNAME = process.env.NSDC_UPLOAD_USERNAME || process.env.NSDC_USERNAME;
+const PASSWORD = process.env.NSDC_UPLOAD_PASSWORD || process.env.NSDC_PASSWORD;
 
 const [, , file, rowArg] = process.argv;
 
@@ -33,7 +35,7 @@ if (!file) {
     process.exit(1);
 }
 if (!USERNAME || !PASSWORD) {
-    console.error('Set NSDC_USERNAME and NSDC_PASSWORD in the environment.');
+    console.error('Set NSDC_UPLOAD_USERNAME and NSDC_UPLOAD_PASSWORD (or NSDC_USERNAME and NSDC_PASSWORD) in the environment.');
     process.exit(1);
 }
 
