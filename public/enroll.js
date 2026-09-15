@@ -9,6 +9,15 @@ const pendingTitle = document.getElementById('pendingTitle');
 const pendingNote = document.getElementById('pendingNote');
 const pendingBtn = document.getElementById('pendingBtn');
 const nsdcNote = document.getElementById('nsdcNote');
+const fileInput = document.getElementById('fileInput');
+const uploadBtn = document.getElementById('uploadBtn');
+const previewBtn = document.getElementById('previewBtn');
+const previewEl = document.getElementById('preview');
+const previewTitle = document.getElementById('previewTitle');
+const previewBody = document.getElementById('previewBody');
+const resolvedEl = document.getElementById('resolved');
+const resolvedTitle = document.getElementById('resolvedTitle');
+const resolvedBody = document.getElementById('resolvedBody');
 let pollTimer = null;
 
 // The poll that runs on page load and a button click can both be waiting on a
@@ -24,6 +33,8 @@ const ownsStatus = token => token === statusToken;
 
 
 pendingBtn.addEventListener('click', enrolPending);
+uploadBtn.addEventListener('click', startSheetUpload);
+previewBtn.addEventListener('click', previewPayload);
 
 /**
  * What NSDC itself says is enrolled, under the count this page was told.
@@ -133,6 +144,170 @@ async function enrolPending() {
   poll();
 }
 
+/**
+ * Resolves the sheet and shows what it came to, without enrolling anybody.
+ *
+ * Worth doing every time this sheet carries IDs: a candidate ID with a digit
+ * wrong is still a well-formed candidate ID, and NSDC enrols whoever it belongs
+ * to without a word. The resolved table below is where that shows up.
+ */
+async function previewPayload() {
+  const token = claimStatus();
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    showStatus('error', 'Choose a .csv or .xlsx file first.');
+    return;
+  }
+
+  previewBtn.disabled = true;
+  clearErrors();
+  downloadRow.style.display = 'none';
+  showStatus('running', 'Resolving the sheet…');
+
+  const form = new FormData();
+  form.append('sheet', file);
+
+  let res;
+  try {
+    res = await fetch('/api/enroll/preview', { method: 'POST', body: form });
+  } catch (err) {
+    showStatus('error', 'Preview failed: ' + err.message);
+    previewBtn.disabled = false;
+    return;
+  }
+
+  if (res.status === 401) return location.href = '/login';
+
+  const body = await res.json().catch(() => ({}));
+  previewBtn.disabled = false;
+
+  if (!ownsStatus(token)) return;
+
+  if (res.status === 422) {
+    const count = showValidationErrors(body);
+    showStatus('error', 'Sheet rejected — ' + count + ' problem(s) found.');
+    return;
+  }
+
+  if (!res.ok) {
+    showStatus('error', body.error || 'Preview failed');
+    return;
+  }
+
+  // Rows left out of the payloads are not failures of the preview; say why they
+  // are missing, so the count adds up against the sheet
+  const notes = [];
+  if (body.skipped) notes.push(body.skipped + ' row(s) left out — already enrolled or listed twice');
+  if (body.unresolvedCount) notes.push(body.unresolvedCount + ' row(s) could not be matched');
+  if (notes.length > 0) {
+    banner.style.display = 'block';
+    banner.textContent = notes.join('. ') + '.';
+  }
+
+  const unmatchedMessages = [
+    ...(body.unresolved || []).map(u => 'Row ' + u.row + ': ' + u.who + ' — ' + u.error),
+    ...(body.skippedRows || []).map(r => 'Row ' + r.row + ': ' + r.who + ' — ' + r.error)
+  ];
+  if (unmatchedMessages.length > 0) showErrors('Rows not in the payloads', unmatchedMessages);
+
+  showResolved(body.resolved || []);
+
+  showStatus('done', body.total + ' enrolment(s) in ' + body.groups +
+    ' batch payload(s). Nothing was sent to NSDC.');
+  previewTitle.textContent = 'Payload preview — showing ' +
+    Math.min(5, body.groups) + ' of ' + body.groups + ' batch payload(s)';
+  previewBody.textContent = JSON.stringify(body.payloads, null, 2);
+  previewEl.style.display = 'block';
+}
+
+// An ID the portal has never seen still enrols — students and batches made on
+// NSDC by hand are what the ID columns are for — so an unknown name is said
+// plainly rather than treated as an error.
+function showResolved(rows) {
+  resolvedBody.textContent = '';
+  if (rows.length === 0) {
+    resolvedEl.style.display = 'none';
+    return;
+  }
+
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    const cells = [
+      { text: String(row.row) },
+      { text: row.candidateId },
+      { text: row.studentName || row.email || 'not known to this portal', unknown: !row.studentName && !row.email },
+      { text: String(row.batchId) },
+      { text: row.batchName || 'not known to this portal', unknown: !row.batchName }
+    ];
+    for (const cell of cells) {
+      const td = document.createElement('td');
+      td.textContent = cell.text;
+      if (cell.unknown) td.className = 'unknown';
+      tr.appendChild(td);
+    }
+    resolvedBody.appendChild(tr);
+  }
+
+  resolvedTitle.textContent = 'What each row resolved to — ' + rows.length + ' row(s)';
+  resolvedEl.style.display = 'block';
+}
+
+async function startSheetUpload() {
+  const token = claimStatus();
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    showStatus('error', 'Choose a .csv or .xlsx file first.');
+    return;
+  }
+
+  uploadBtn.disabled = true;
+  clearErrors();
+  downloadRow.style.display = 'none';
+  showStatus('running', 'Checking the sheet…');
+
+  const form = new FormData();
+  form.append('sheet', file);
+
+  let res;
+  try {
+    res = await fetch('/api/enroll/upload', { method: 'POST', body: form });
+  } catch (err) {
+    showStatus('error', 'Upload failed: ' + err.message);
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  if (res.status === 401) return location.href = '/login';
+
+  const body = await res.json().catch(() => ({}));
+
+  if (!ownsStatus(token)) return;
+
+  if (res.status === 422) {
+    // Validation failed — nothing was sent to NSDC
+    const count = showValidationErrors(body);
+    showStatus('error', 'Sheet rejected — ' + count + ' problem(s) found. Nothing was sent to NSDC.');
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  if (!res.ok) {
+    showStatus('error', body.error || 'Upload failed');
+    uploadBtn.disabled = false;
+    return;
+  }
+
+  const notes = [];
+  if (body.skipped) notes.push(body.skipped + ' row(s) skipped — already enrolled or listed twice');
+  if (body.unresolvedCount) notes.push(body.unresolvedCount + ' row(s) could not be matched — see the result CSV');
+  if (notes.length > 0) {
+    banner.style.display = 'block';
+    banner.textContent = notes.join('. ') + '.';
+  }
+
+  poll();
+}
+
 function showValidationErrors(body) {
   const messages = [];
   for (const headerError of body.headerErrors || []) messages.push(headerError);
@@ -153,6 +328,9 @@ function showStatus(cls, text) {
 function clearErrors() {
   errorsEl.style.display = 'none';
   errorList.textContent = '';
+  previewEl.style.display = 'none';
+  resolvedEl.style.display = 'none';
+  banner.style.display = 'none';
 }
 
 function showErrors(title, messages) {
@@ -226,12 +404,16 @@ async function poll() {
 
   if (data.state === 'running') {
     pendingBtn.disabled = true;
+    uploadBtn.disabled = true;
+    previewBtn.disabled = true;
     showRunning(data);
     downloadRow.style.display = 'none';
     pollTimer = setTimeout(poll, 1500);
     return;
   }
 
+  uploadBtn.disabled = false;
+  previewBtn.disabled = false;
   loadPending();
   showNsdcCount();
 

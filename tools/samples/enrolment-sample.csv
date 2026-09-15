@@ -1,0 +1,14 @@
+candidateId,batchId,email,batchName
+CAN_91000001,5101,,
+CAN_91000001,5102,,
+CAN_91000001,5103,,
+CAN_91000001,5104,,
+CAN_91000002,,,SST Jan24
+,,anaya.iyer@example.com,SST Jan25
+,5103,rohan.mehta@example.com,
+CAN_91000003,5101,priya.nair@example.com,SST Jan24
+CAN_91000001,5101,,
+,,nobody.here@example.com,SST Jan24
+,,vikram.rao@example.com,Academy Dec99
+
+CAN_91000004,7788,,
