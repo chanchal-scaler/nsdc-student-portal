@@ -434,8 +434,8 @@ app.get('/_mock', (_req, res) => {
   td { padding: 0.25rem 1.5rem 0.25rem 0; color: #4b5563; }
 </style>
 <h1>Mock NSDC</h1>
-<div class="state \${serviceDown ? 'down' : 'up'}">
-  \${serviceDown ? 'Down — every endpoint answers 503' : 'Up — answering normally'}
+<div class="state ${serviceDown ? 'down' : 'up'}">
+  ${serviceDown ? 'Down — every endpoint answers 503' : 'Up — answering normally'}
 </div>
 <form method="POST" action="/_mock/down" style="display:inline"><button class="stop">Take it down</button></form>
 <form method="POST" action="/_mock/up" style="display:inline"><button class="start">Bring it back</button></form>
@@ -476,10 +476,10 @@ app.get('/_mock', (_req, res) => {
   ${downAfter === null ? 'Not armed.' : `Armed — ${downAfter} more request(s) will be served.`}
 </p>
 <table>
-  <tr><td>candidates registered</td><td>\${registrations.length}</td></tr>
-  <tr><td>batches created</td><td>\${createdBatches.length}</td></tr>
-  <tr><td>enrolments</td><td>\${enrolments.length}</td></tr>
-  <tr><td>completions</td><td>\${completions.length}</td></tr>
+  <tr><td>candidates registered</td><td>${registrations.length}</td></tr>
+  <tr><td>batches created</td><td>${createdBatches.length}</td></tr>
+  <tr><td>enrolments</td><td>${enrolments.length}</td></tr>
+  <tr><td>completions</td><td>${completions.length}</td></tr>
 </table>`);
 });
 
