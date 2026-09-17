@@ -33,6 +33,12 @@ app.use(express.urlencoded({ extended: false }));
 // portal can be watched reacting to one and recovering from it.
 let serviceDown = false;
 
+// Refusing the sign-in is its own case, and not reachable through the switch
+// above: a service that is down answers 503 everywhere, whereas a password NSDC
+// does not accept comes back 400 from a service that is otherwise fine. Telling
+// those two apart is the whole job of the failures page, so it needs rehearsing.
+let refuseLogin = false;
+
 // Going down part way through a run is the case worth rehearsing, and clicking
 // the switch fast enough is luck: a batch upload is one request per row, but an
 // enrolment is one request per batch, so the whole run can be over in a second.
@@ -155,6 +161,13 @@ app.post('/api/user/v1/login', (req, res) => {
     const { userName, password } = req.body || {};
     if (!userName || !password) {
         return res.status(401).json({ message: 'Username and password are required' });
+    }
+
+    // Worded the way the real service words it, since the point of the switch is
+    // to see that wording reach the failures page
+    if (refuseLogin) {
+        log(`login refused for ${userName}`);
+        return res.status(400).json({ message: `Invalid username or password for ${userName}` });
     }
 
     // The client appends the plain secret to the base64 ciphertext; splitting it
@@ -426,6 +439,16 @@ app.get('/_mock', (_req, res) => {
 </div>
 <form method="POST" action="/_mock/down" style="display:inline"><button class="stop">Take it down</button></form>
 <form method="POST" action="/_mock/up" style="display:inline"><button class="start">Bring it back</button></form>
+<form method="POST" action="/_mock/refuse-login" style="margin-top:1rem">
+  <button class="${refuseLogin ? 'start' : 'stop'}">${refuseLogin ? 'Accept sign-ins again' : 'Refuse the sign-in'}</button>
+</form>
+<p style="margin-top:0.5rem;font-size:0.8125rem;color:#6b7280">
+  For a run that never starts: the service stays up and answers 400 with a
+  message, the way it does for a password it does not accept. Different from
+  taking it down, and the failures page should say so.
+  ${refuseLogin ? 'Refusing every sign-in.' : 'Accepting sign-ins.'}
+</p>
+
 <form method="POST" action="/_mock/refuse" style="margin-top:1rem">
   <label>Refuse any request carrying
     <input name="value" value="${refuseMatching || ''}" placeholder="e.g. a batch name" style="width:14rem">
@@ -468,6 +491,7 @@ app.post('/_mock/down', (_req, res) => {
 app.post('/_mock/up', (_req, res) => {
     downAfter = null;
     serviceDown = false;
+    refuseLogin = false;
     log('up: answering normally again');
     res.redirect('/_mock');
 });
@@ -488,6 +512,13 @@ app.post('/_mock/refuse', (req, res) => {
     // The control page posts a form; curl asks for JSON
     if ((req.get('Accept') || '').includes('text/html')) return res.redirect('/_mock');
     res.json({ ok: true, refuseMatching });
+});
+
+app.post('/_mock/refuse-login', (req, res) => {
+    refuseLogin = !refuseLogin;
+    log(refuseLogin ? 'refusing every sign-in with 400' : 'accepting sign-ins again');
+    if ((req.get('Accept') || '').includes('text/html')) return res.redirect('/_mock');
+    res.json({ ok: true, refuseLogin });
 });
 
 app.post('/_mock/allow', (_req, res) => {
