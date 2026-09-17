@@ -104,8 +104,10 @@ personal details are in that table and readable by anyone with a portal login.
 | `LOGIN_EMAIL` | yes | Email to sign in to this portal |
 | `LOGIN_PASSWORD` | yes | Password to sign in to this portal |
 | `SESSION_SECRET` | recommended | Long random string for session cookies (auto-generated per boot if unset, which logs everyone out on restart) |
-| `NSDC_USERNAME` | yes | Skill India admin username |
-| `NSDC_PASSWORD` | yes | Skill India admin password |
+| `NSDC_USERNAME` | yes | Skill India admin username, used to download |
+| `NSDC_PASSWORD` | yes | Skill India admin password, used to download |
+| `NSDC_UPLOAD_USERNAME` | no | Username for uploads; falls back to `NSDC_USERNAME` |
+| `NSDC_UPLOAD_PASSWORD` | for uploads | Password for uploads. Unset, uploads fail and downloads keep working |
 | `TP_ID` | no | Training partner ID (default `TP155158`) |
 | `PORT` | no | Set automatically by Railway |
 
@@ -127,7 +129,8 @@ Open http://localhost:3000.
 3. In the service's **Variables** tab, add:
    - `LOGIN_EMAIL`, `LOGIN_PASSWORD`
    - `SESSION_SECRET` (generate one: `openssl rand -hex 32`)
-   - `NSDC_USERNAME`, `NSDC_PASSWORD`
+   - `NSDC_USERNAME`, `NSDC_PASSWORD` (downloads)
+   - `NSDC_UPLOAD_PASSWORD` (uploads; without it uploads stay off)
    - `TP_ID` (optional)
 4. Under **Settings → Networking**, click **Generate Domain** to get a public URL.
 5. Open the URL, sign in, and fetch the data.
