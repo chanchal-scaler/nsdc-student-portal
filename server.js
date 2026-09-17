@@ -8,14 +8,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents, fetchCandidatesForBatches } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ASSESSMENT_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
-import { enrollCandidates } from './lib/nsdc-enrollments.js';
+import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, getEnrolledPairs, getCompletedPairs, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
     findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
@@ -728,9 +728,13 @@ const enrollJob = {
 };
 
 
+// Holds the most recent enrolment payload preview so it can be downloaded whole
+let enrollPreviewFile = null;
+
 function resetEnrollJob() {
     for (const f of fs.readdirSync(DATA_DIR)) {
-        if (f.startsWith('enroll_result_') && f.endsWith('.csv')) {
+        if ((f.startsWith('enroll_result_') && f.endsWith('.csv')) ||
+            (f.startsWith('enroll_payload_preview_') && f.endsWith('.json'))) {
             try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
         }
     }
@@ -742,44 +746,81 @@ function resetEnrollJob() {
 }
 
 /**
- * Turns sheet rows into per-batch groups, looking every email and batch name up
- * in what earlier uploads stored. Rows that cannot be resolved, and pairs
- * already recorded as enrolled, are returned separately rather than sent.
+ * Turns sheet rows into per-batch groups. A row that gives an ID is taken at its
+ * word; one that gives an email or a batch name has it looked up in what earlier
+ * uploads stored. Rows that cannot be resolved, and pairs already enrolled, are
+ * returned separately rather than sent.
+ *
+ * An ID that the portal has never seen is still enrolled. Students and batches
+ * created on NSDC outside this portal are exactly what the ID columns are for,
+ * so not recognising one is not a reason to refuse it — but the name it resolves
+ * to is carried along where there is one, since that is what the preview shows
+ * and what makes a mistyped ID visible before anybody is enrolled.
  */
 async function resolveEnrollmentRows(rows) {
     const enrolledPairs = await getEnrolledPairs();
     const groups = new Map();
     const unresolved = [];
     const skipped = [];
+    // The same pairing twice in one sheet is a slip, not an instruction to
+    // enrol twice — and the same student legitimately appears on several rows
+    // here, so a repeat is easy to make and worth naming rather than sending.
+    const seenPairs = new Set();
 
     for (const row of rows) {
-        const candidate = await findCandidateByEmail(row.email);
-        if (!candidate) {
-            unresolved.push({ ...row, status: 'NOT_FOUND', error: 'No candidate ID stored for this email — upload the student first' });
-            continue;
+        let candidateId = row.candidateId || '';
+        let email = row.email || '';
+        let studentName = '';
+
+        if (candidateId) {
+            const known = await findCandidateById(candidateId);
+            if (known) {
+                studentName = known.name || '';
+                email = email || known.email || '';
+            }
+        } else {
+            const candidate = await findCandidateByEmail(email);
+            if (!candidate) {
+                unresolved.push({ ...row, status: 'NOT_FOUND', error: 'No candidate ID stored for this email — upload the student first, or give the candidate ID' });
+                continue;
+            }
+            candidateId = candidate.candidate_id;
+            studentName = candidate.name || '';
         }
 
-        const batch = await findBatchByName(row.batchName);
-        if (!batch) {
-            unresolved.push({ ...row, candidateId: candidate.candidate_id, status: 'NOT_FOUND', error: `No batch ID stored for "${row.batchName}" — create the batch first` });
-            continue;
+        let batchId = row.batchId ? Number(row.batchId) : null;
+        let batchName = row.batchName || '';
+
+        if (batchId !== null) {
+            const known = await findBatchById(batchId);
+            if (known) batchName = known.batch_name;
+        } else {
+            const batch = await findBatchByName(batchName);
+            if (!batch) {
+                unresolved.push({ ...row, candidateId, status: 'NOT_FOUND', error: `No batch ID stored for "${batchName}" — create the batch first, or give the batch ID` });
+                continue;
+            }
+            batchId = batch.batch_id;
+            batchName = batch.batch_name;
         }
 
-        const resolved = {
-            ...row,
-            candidateId: candidate.candidate_id,
-            batchId: batch.batch_id,
-            batchName: batch.batch_name
-        };
+        const resolved = { ...row, candidateId, email, studentName, batchId, batchName };
+        const pair = `${candidateId}|${batchId}`;
 
-        if (enrolledPairs.has(`${candidate.candidate_id}|${batch.batch_id}`)) {
+        if (seenPairs.has(pair)) {
+            skipped.push({ ...resolved, status: 'SKIPPED', error: 'Listed twice in this sheet — sent once' });
+            continue;
+        }
+        seenPairs.add(pair);
+
+        if (enrolledPairs.has(pair)) {
             skipped.push({ ...resolved, status: 'SKIPPED', error: 'Already enrolled in this batch' });
             continue;
         }
 
-        const key = String(batch.batch_id);
+        const key = String(batchId);
         if (!groups.has(key)) {
-            groups.set(key, { batchId: batch.batch_id, batchName: batch.batch_name, rows: [] });
+            groups.set(key, { batchId, batchName, rows: [] });
         }
         groups.get(key).rows.push(resolved);
     }
@@ -1761,6 +1802,147 @@ app.get('/api/enroll/mapping', requireLogin, async (req, res) => {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="enrolment_mapping_${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send(lines.join('\n') + '\n');
+});
+
+/**
+ * The enrolment sheet: one row per enrolment, which is the one thing the button
+ * above cannot express. A student sheet carries a single batch per student, so
+ * a student who takes a new batch each year — the SST case — needs a sheet that
+ * can name the same student four times.
+ */
+app.get('/api/enroll/template', requireLogin, (req, res) => {
+    const csv = ENROLLMENT_COLUMNS.join(',') + '\n' +
+        // Both ways of naming a student and a batch, since either column of each
+        // pair may be left empty and the template is where that is learnt
+        'CAN_91234567,4821,,\n' +
+        'CAN_91234567,4822,,\n' +
+        ',,rahul.sharma@example.com,SST Jan26\n';
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="enrolment_template.csv"');
+    res.send(csv);
+});
+
+async function readEnrollmentUpload(req, res) {
+    if (!req.file) {
+        res.status(400).json({ error: 'No file received' });
+        return null;
+    }
+    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
+        res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
+        return null;
+    }
+
+    let parsed;
+    try {
+        parsed = await parseEnrollmentSheet(req.file.buffer, req.file.originalname);
+    } catch (err) {
+        res.status(400).json({ error: `Could not read the file: ${err.message}` });
+        return null;
+    }
+
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+        return null;
+    }
+
+    if (parsed.rows.length === 0) {
+        res.status(400).json({ error: 'The sheet has no rows' });
+        return null;
+    }
+
+    return parsed;
+}
+
+/**
+ * Resolves the sheet and shows what it came to without enrolling anybody.
+ *
+ * This matters more here than on the other pages: a candidate ID typed wrongly
+ * is still a well-formed candidate ID, and NSDC enrols whoever it belongs to
+ * without complaint. The names each ID resolved to are the only place that is
+ * visible before the fact.
+ */
+app.post('/api/enroll/preview', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    const parsed = await readEnrollmentUpload(req, res);
+    if (!parsed) return;
+
+    const { groups, unresolved, skipped } = await resolveEnrollmentRows(parsed.rows);
+
+    const payloads = groups.map(group => ({
+        batchName: group.batchName || '(not created by this portal — name unknown here)',
+        students: group.rows.length,
+        method: 'POST',
+        url: 'https://adminservices.skillindiadigital.gov.in/api/thirdparty/v1/enroll/Candidate',
+        body: buildEnrollmentPayload(group.batchId, group.rows.map(r => r.candidateId))
+    }));
+
+    const fileName = `enroll_payload_preview_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    fs.writeFileSync(path.join(DATA_DIR, fileName), JSON.stringify(payloads, null, 2), 'utf8');
+    enrollPreviewFile = { path: path.join(DATA_DIR, fileName), name: fileName };
+
+    res.json({
+        total: groups.reduce((n, g) => n + g.rows.length, 0),
+        groups: groups.length,
+        skipped: skipped.length,
+        skippedRows: skipped.map(r => ({ row: r.rowNumber, who: r.email || r.candidateId, error: r.error })).slice(0, 200),
+        unresolved: unresolved.map(u => ({ row: u.rowNumber, who: u.email || u.candidateId, error: u.error })).slice(0, 200),
+        unresolvedCount: unresolved.length,
+        // What each row actually resolved to, which is the point of previewing
+        resolved: groups.flatMap(group => group.rows.map(r => ({
+            row: r.rowNumber,
+            candidateId: r.candidateId,
+            studentName: r.studentName || '',
+            email: r.email || '',
+            batchId: group.batchId,
+            batchName: group.batchName || ''
+        }))).sort((a, b) => a.row - b.row).slice(0, 200),
+        payloads: payloads.slice(0, 5),
+        fileName
+    });
+});
+
+app.get('/api/enroll/preview/file', requireLogin, (req, res) => {
+    if (!enrollPreviewFile || !fs.existsSync(enrollPreviewFile.path)) {
+        return res.status(404).json({ error: 'No preview available. Run a preview first.' });
+    }
+    res.download(enrollPreviewFile.path, enrollPreviewFile.name);
+});
+
+app.post('/api/enroll/upload', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (enrollJob.state === 'running') {
+        return res.status(409).json({ error: 'An enrolment is already in progress' });
+    }
+
+    const parsed = await readEnrollmentUpload(req, res);
+    if (!parsed) return;
+
+    const resolved = await resolveEnrollmentRows(parsed.rows);
+
+    if (resolved.groups.length === 0) {
+        return res.status(422).json({
+            headerErrors: [],
+            errors: resolved.unresolved.map(u => ({ row: u.rowNumber, message: u.error })),
+            errorCount: resolved.unresolved.length,
+            validRows: 0,
+            note: resolved.skipped.length > 0
+                ? `${resolved.skipped.length} row(s) are already enrolled; nothing left to send.`
+                : 'No row could be matched to a student and a batch.'
+        });
+    }
+
+    startEnrollJob(resolved, req.file.originalname, req.session.userEmail);
+    res.json({
+        started: true,
+        total: resolved.groups.reduce((n, g) => n + g.rows.length, 0),
+        groups: resolved.groups.length,
+        skipped: resolved.skipped.length,
+        unresolvedCount: resolved.unresolved.length
+    });
 });
 
 app.get('/api/enroll/status', requireLogin, (req, res) => {

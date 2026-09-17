@@ -15,10 +15,49 @@ A small login-protected web app that fetches the full student list from the Skil
 | `/` | Download the full student list as CSV |
 | `/upload` | Register students from a sheet |
 | `/batches` | Create batches from a sheet |
-| `/enroll` | Enrol the students waiting for a batch |
+| `/enroll` | Enrol the students waiting for a batch, or upload a sheet pairing students with batches |
 | `/complete` | Submit assessment results |
 | `/history` | Enrolled so far — every batch, who is in it, and what NSDC actually holds |
 | `/failures` | Every NSDC call that did not go through: endpoint, timestamp, uploader, payload sent, answer received |
+
+## Two ways to enrol
+
+The button on `/enroll` enrols the waiting list: every student whose sheet named
+a batch, paired with that batch as soon as it exists. That covers the ordinary
+case and needs no file.
+
+The sheet next to it covers the case the waiting list cannot express — a student
+who belongs in more than one batch. An SST student sits in a different batch
+each year of their tenure, and a student sheet carries one batch per student. So
+the enrolment sheet is one row per enrolment, and the same student may appear on
+as many rows as they have batches.
+
+| Column | |
+|---|---|
+| `candidateId` | The student, as NSDC knows them — `CAN_91000001` |
+| `batchId` | The batch, as NSDC knows it — `5101` |
+| `email` | The student, if the candidate ID is not to hand |
+| `batchName` | The batch, if the batch ID is not to hand |
+
+A row needs one of `candidateId`/`email` and one of `batchId`/`batchName`. IDs
+are sent as given; emails and batch names are resolved against what the Students
+and Batches pages stored. Both forms exist because neither covers everything:
+whoever fills the sheet in will not always have IDs, and a batch created on NSDC
+by hand has no ID stored here for a name to resolve to.
+
+Only batch *names* are held to the `<Programme> <Month><YY>` shape. A batch given
+by ID is already on NSDC under whatever it was called, and refusing the ID over
+the name would put that batch out of reach.
+
+**Preview payload only** resolves every row and shows whose name each ID turned
+out to be, before anything is sent. A candidate ID with a digit wrong is still a
+well-formed candidate ID, and NSDC enrols whoever it belongs to without
+complaint — the preview is the only place that is catchable.
+
+Two sample sheets are checked in for testing against the mock server:
+`tools/samples/enrolment-sample.csv` (one student across four batches, both ways
+of naming a student and a batch, a repeated pair, rows that resolve to nothing)
+and `tools/samples/enrolment-sample-errors.csv` (one row per validation rule).
 
 ## Logins
 

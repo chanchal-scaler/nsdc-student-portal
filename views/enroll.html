@@ -72,7 +72,20 @@
   .pending h2 { font-size: 0.9375rem; color: #075985; margin-bottom: 0.25rem; }
   .pending .meta { margin-bottom: 0.75rem; }
   .pending-actions { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; }
+  .file-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  input[type="file"] { font-size: 0.875rem; }
+  .or { margin: 1.5rem 0 1rem; border-top: 1px solid #e5e7eb; padding-top: 1.25rem; }
+  .preview { margin-top: 1.25rem; display: none; }
+  .preview h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.5rem; }
+  .preview pre { max-height: 380px; overflow: auto; background: #111827; color: #e5e7eb;
     border-radius: 8px; padding: 0.875rem; font-size: 0.75rem; line-height: 1.5; margin-bottom: 0.5rem; }
+  .resolved { margin-top: 1.25rem; display: none; }
+  .resolved h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.5rem; }
+  .resolved table { width: 100%; border-collapse: collapse; font-size: 0.75rem; }
+  .resolved th, .resolved td { text-align: left; padding: 0.375rem 0.5rem; border-bottom: 1px solid #e5e7eb; }
+  .resolved th { color: #6b7280; font-weight: 600; }
+  .resolved .unknown { color: #b45309; }
+  .resolved-scroll { max-height: 320px; overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
   .meta { font-size: 0.8125rem; color: #6b7280; margin-top: 0.5rem; }
   /* The count above is what NSDC told this page; this is what NSDC holds */
   .nsdc-note { display: none; margin-top: 0.75rem; font-size: 0.75rem; color: #6b7280; }
@@ -107,6 +120,27 @@
         </div>
       </div>
 
+      <div class="or">
+        <p>Or upload a sheet, one row per enrolment. The list above can only offer each student the one batch their student sheet named; a sheet here can name the same student as many times as they have batches — an SST student sits in a different batch each year of their tenure.</p>
+
+        <ul class="rules">
+          <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB. Columns: <code>candidateId</code>, <code>batchId</code>, <code>email</code>, <code>batchName</code>.</li>
+          <li><strong>Name the student either way, and the batch either way.</strong> A row needs one of <code>candidateId</code>/<code>email</code> and one of <code>batchId</code>/<code>batchName</code>. Emails and names are looked up from what the Students and Batches pages stored; IDs are used as they are.</li>
+          <li><strong>IDs reach batches this portal never created.</strong> A batch made on NSDC by hand has no ID stored here, so its name resolves to nothing — give the batch ID and it enrols anyway.</li>
+          <li><strong>Batch names read as &lt;Programme&gt; &lt;Month&gt;&lt;YY&gt;</strong> — <code>SST Jan26</code>, <code>Academy Sep26</code>, <code>DSML July27</code>. Programme is one of Academy, DSML, DevOps, AIML, SST, OPGP, SSB. A name like <code>SST 2024 Year 1</code> is rejected; enrol that batch by its <code>batchId</code> instead.</li>
+          <li>The same student on four rows with four batches is the point of this sheet, and enrols into all four. The same student and batch twice is a slip, and is sent once.</li>
+          <li>Students already recorded as enrolled in that batch are skipped, so the same sheet can be run again safely.</li>
+          <li><strong>Preview payload only</strong> resolves every row, shows whose ID each one turned out to be and the exact JSON that would be sent — no request is made and nobody is enrolled. A mistyped candidate ID is still a real candidate ID, and NSDC enrols whoever it belongs to without complaint, so this is the one place to catch it.</li>
+        </ul>
+
+        <div class="file-row">
+          <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
+          <button class="btn btn-secondary" id="previewBtn">Preview payload only</button>
+          <button class="btn btn-primary" id="uploadBtn">Enrol from sheet</button>
+          <a class="link-template" href="/api/enroll/template">Download template</a>
+        </div>
+      </div>
+
       <div class="status" id="status"></div>
       <div class="nsdc-note" id="nsdcNote"></div>
 
@@ -118,6 +152,22 @@
       <div class="download-row" id="downloadRow">
         <a class="btn btn-success" href="/api/enroll/result">Download result CSV</a>
         <div class="meta" id="fileMeta"></div>
+      </div>
+
+      <div class="resolved" id="resolved">
+        <h2 id="resolvedTitle">What each row resolved to</h2>
+        <div class="resolved-scroll">
+          <table>
+            <thead><tr><th>Row</th><th>Candidate ID</th><th>Student</th><th>Batch ID</th><th>Batch</th></tr></thead>
+            <tbody id="resolvedBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="preview" id="preview">
+        <h2 id="previewTitle">Payload preview</h2>
+        <pre id="previewBody"></pre>
+        <a class="link-template" href="/api/enroll/preview/file" id="previewDownload">Download all payloads as JSON</a>
       </div>
 
 

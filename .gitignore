@@ -4,4 +4,6 @@ node_modules/
 !.env.example
 data/
 *.csv
+# except the sheets checked in to test the upload pages against
+!tools/samples/*.csv
 lib/understanding
