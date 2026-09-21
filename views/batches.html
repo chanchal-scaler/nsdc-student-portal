@@ -98,8 +98,8 @@
 
       <ul class="rules">
         <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB.</li>
-        <li>All 21 batch columns are required — use the template below to get the exact names. There is no <code>size</code> column: the size is counted from the students already uploaded for that batch.</li>
-        <li><strong>Upload the students first.</strong> A batch nobody has been uploaded for is not created, since its size would be zero.</li>
+        <li>All 21 batch columns are required — use the template below to get the exact names. <code>size</code> is optional: where the students for a batch have already been uploaded the size is counted from them, so it can be left blank.</li>
+        <li><strong>Batches and students can go up in either order.</strong> A batch made before its students has nobody to count, so fill in <code>size</code> with the number of places. A batch created with no room takes nobody — NSDC answers every enrolment into it with "cannot enroll more" — so a batch with neither students nor a size is not created.</li>
         <li>A batch whose name already exists is not created again. NSDC does not refuse a repeated name — it quietly makes "Academy Sep26(2)" — so the portal stops it here.</li>
         <li><strong>Dates must be readable, and <code>YYYY-MM-DD</code> is safest.</strong> <code>2026-09-01</code>, <code>01-Sep-2026</code> and <code>9/1/2026 2:00:00</code> all work — read the same way the existing batch script reads them.</li>
         <li><strong>Batch names read as &lt;Programme&gt; &lt;Month&gt;&lt;YY&gt;</strong> — <code>Academy Sep26</code>, <code>DSML July27</code>. Programme is one of Academy, DSML, DevOps, AIML, SST, OPGP, SSB.</li>
