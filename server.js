@@ -1239,6 +1239,13 @@ const syncJob = {
     totalPages: null,
     candidatesSeen: 0,
     matched: 0,
+    // What the read passed over: memberships in batches nobody asked about.
+    // Without these, "0 in these batches" gives no clue whether NSDC held no
+    // memberships at all or held them under IDs the portal does not know.
+    membershipsSeen: 0,
+    membershipsElsewhere: 0,
+    otherBatchIds: [],
+    wanted: [],
     batches: 0,
     failedPages: [],
     serviceDown: false,
@@ -1253,6 +1260,10 @@ function startSyncJob(batches, startedBy) {
     syncJob.totalPages = null;
     syncJob.candidatesSeen = 0;
     syncJob.matched = 0;
+    syncJob.membershipsSeen = 0;
+    syncJob.membershipsElsewhere = 0;
+    syncJob.otherBatchIds = [];
+    syncJob.wanted = [];
     syncJob.batches = batches.length;
     syncJob.failedPages = [];
     syncJob.serviceDown = false;
@@ -1263,11 +1274,16 @@ function startSyncJob(batches, startedBy) {
         password: NSDC_PASSWORD,
         tpId: TP_ID,
         batchIds: batches.map(b => b.batchId),
-        onProgress: ({ pagesFetched, totalPages, candidatesSeen, matched, failedPages }) => {
+        onProgress: ({ pagesFetched, totalPages, candidatesSeen, matched,
+                       membershipsSeen, membershipsElsewhere, otherBatchIds, wanted, failedPages }) => {
             syncJob.pagesFetched = pagesFetched;
             syncJob.totalPages = totalPages;
             syncJob.candidatesSeen = candidatesSeen;
             syncJob.matched = matched;
+            syncJob.membershipsSeen = membershipsSeen;
+            syncJob.membershipsElsewhere = membershipsElsewhere;
+            syncJob.otherBatchIds = otherBatchIds;
+            syncJob.wanted = wanted;
             syncJob.failedPages = failedPages;
         }
     }).then(async ({ byBatch, candidatesSeen, pagesFetched, failedPages }) => {
@@ -1285,6 +1301,10 @@ function startSyncJob(batches, startedBy) {
             outcome: failedPages.length > 0 ? 'partial' : 'finished'
         });
         console.log(`NSDC read complete: ${candidatesSeen} candidates over ${pagesFetched} page(s), ${written} in known batches`);
+        if (written === 0 && syncJob.membershipsSeen > 0) {
+            console.warn(`NSDC read matched nothing: ${syncJob.membershipsSeen} membership(s) seen, all in other batches ` +
+                `(e.g. ${syncJob.otherBatchIds.join(', ')}); looking for ${syncJob.wanted.slice(0, 5).join(', ')}`);
+        }
     }).catch(async err => {
         // A read that stopped part way still wrote the batches it got to, so
         // what it did read is kept rather than thrown away
@@ -2053,6 +2073,10 @@ app.get('/api/history/sync/status', requireLogin, async (req, res) => {
         totalPages: syncJob.totalPages,
         candidatesSeen: syncJob.candidatesSeen,
         matched: syncJob.matched,
+        membershipsSeen: syncJob.membershipsSeen,
+        membershipsElsewhere: syncJob.membershipsElsewhere,
+        otherBatchIds: syncJob.otherBatchIds,
+        wanted: syncJob.wanted,
         batches: syncJob.batches,
         failedPages: syncJob.failedPages.length,
         serviceDown: syncJob.serviceDown,
