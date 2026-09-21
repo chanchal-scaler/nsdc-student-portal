@@ -207,7 +207,8 @@ function showSync(state) {
     syncBtn.disabled = true;
     const of = state.totalPages ? ' of ' + state.totalPages : '';
     syncNote.textContent = 'Reading NSDC — page ' + state.pagesFetched + of +
-      ', ' + state.candidatesSeen + ' candidate(s) seen, ' + state.matched + ' in these batches…';
+      ', ' + state.candidatesSeen + ' candidate(s) seen, ' + state.matched + ' in these batches' +
+      (state.membershipsElsewhere ? ' (' + state.membershipsElsewhere + ' in other batches)' : '') + '…';
     return;
   }
 
@@ -232,6 +233,16 @@ function showSync(state) {
     (last.staleSince
       ? ' A run has happened since (' + onDateTime(last.staleSince) +
         '), so read NSDC again for a true count.'
+      : '') +
+    // A read that matched nothing is the one case where the number alone says
+    // nothing useful: it looks the same whether NSDC held no memberships or
+    // held them under batch IDs this portal does not know.
+    (Number(last.enrolled) === 0 && state.membershipsSeen > 0
+      ? ' NSDC did return ' + state.membershipsSeen + ' batch membership(s), but none in these batches' +
+        (state.otherBatchIds && state.otherBatchIds.length
+          ? ' — they were in ' + state.otherBatchIds.join(', ') + (state.membershipsElsewhere > state.otherBatchIds.length ? ' and others' : '')
+          : '') +
+        (state.wanted && state.wanted.length ? '. Looking for ' + state.wanted.join(', ') + '.' : '.')
       : '');
 }
 
