@@ -2245,11 +2245,14 @@ app.get('/complete', requireLogin, (req, res) => {
 });
 
 app.get('/api/complete/template', requireLogin, (req, res) => {
-    // Two example rows, one for each way of naming a student and a batch: by the
-    // IDs a past learner has to be given by, and by email and name as before.
+    // Two example rows, two different students, one for each way of naming them.
+    // The first is named by its IDs, which is how a learner NSDC registered
+    // before this portal has to be given; its email and batch name are filled in
+    // as well, and ignored, because a sheet nobody can read is no help. The
+    // second carries no IDs and is looked up by email and batch name as before.
     const csv = ASSESSMENT_SHEET_COLUMNS.join(',') + '\n' +
-        'CAN_41318794,3952806,,,1\n' +
-        ',,rahul.sharma@example.com,Academy Jan26,1\n';
+        'CAN_41318794,3952806,past.learner@example.com,SST 2023 Year 3,1\n' +
+        ',,rahul.sharma@example.com,Academy Jan26,0\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="batch_completion_template.csv"');
     res.send(csv);
