@@ -15,7 +15,7 @@ import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCompletions, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
     findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
@@ -782,7 +782,9 @@ function buildCompletionSheet(results) {
 }
 
 function resetEnrollJob() {
-    generatedCompletionFile = null;
+    // The completion sheet is not job state: it is what the last run produced,
+    // and the results for it are often filled in days later. It is left alone
+    // here and replaced only when another run enrols somebody.
     for (const f of fs.readdirSync(DATA_DIR)) {
         if ((f.startsWith('enroll_result_') && f.endsWith('.csv')) ||
             (f.startsWith('enroll_payload_preview_') && f.endsWith('.json'))) {
@@ -1127,9 +1129,9 @@ async function resolveAssessmentRows(rows) {
             continue;
         }
 
-        const key = String(batch.batch_id);
+        const key = String(batchId);
         if (!groups.has(key)) {
-            groups.set(key, { batchId: batch.batch_id, batchName: batch.batch_name, rows: [] });
+            groups.set(key, { batchId, batchName, rows: [] });
         }
         groups.get(key).rows.push(resolved);
     }
@@ -2033,7 +2035,16 @@ app.post('/api/enroll/upload', requireLogin, sheetUpload.single('sheet'), async 
     });
 });
 
-app.get('/api/enroll/status', requireLogin, (req, res) => {
+app.get('/api/enroll/status', requireLogin, async (req, res) => {
+    // Where the run that made the sheet is over and gone — a reload, a restart —
+    // the sheet is still worth offering if anybody is waiting on results.
+    let sheet = enrollJob.completionSheet;
+    if (!sheet && dbEnabled && enrollJob.state !== 'running') {
+        try {
+            sheet = (await pendingCompletions()).length > 0 ? 'completion sheet' : null;
+        } catch { /* the rest of the status is still worth answering with */ }
+    }
+
     res.json({
         state: enrollJob.state,
         startedAt: enrollJob.startedAt,
@@ -2050,7 +2061,7 @@ app.get('/api/enroll/status', requireLogin, (req, res) => {
         serviceDown: Boolean(enrollJob.serviceDown),
         resultReady: Boolean(enrollJob.resultFile),
         resultFileName: enrollJob.resultFileName,
-        completionSheet: enrollJob.completionSheet,
+        completionSheet: sheet,
         dbEnabled
     });
 });
@@ -2061,9 +2072,21 @@ app.get('/api/enroll/status', requireLogin, (req, res) => {
  * pair an email to a candidate ID by hand — which for a learner NSDC registered
  * before this portal cannot be done from here at all.
  */
-app.get('/api/enroll/completion-sheet', requireLogin, (req, res) => {
+app.get('/api/enroll/completion-sheet', requireLogin, async (req, res) => {
+    // Rebuilt from the database where the file from the run is gone — a restart
+    // takes the disk with it, and results are often filled in days later.
     if (!generatedCompletionFile || !fs.existsSync(generatedCompletionFile.path)) {
-        return res.status(404).json({ error: 'No completion sheet available. Enrol some students first.' });
+        if (!dbEnabled) {
+            return res.status(404).json({ error: 'No completion sheet available. Enrol some students first.' });
+        }
+        try {
+            buildCompletionSheet((await pendingCompletions()).map(r => ({ ...r, status: 'ENROLLED' })));
+        } catch (err) {
+            console.error('Could not build the completion sheet:', err.message);
+        }
+    }
+    if (!generatedCompletionFile || !fs.existsSync(generatedCompletionFile.path)) {
+        return res.status(404).json({ error: 'No completion sheet available — nobody is enrolled and waiting on results.' });
     }
     res.download(generatedCompletionFile.path, generatedCompletionFile.name);
 });

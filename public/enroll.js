@@ -464,6 +464,12 @@ async function poll() {
     }
     showStatus('error', 'Enrolment failed: ' + (data.error || 'Unknown error'));
     if (data.resultReady) downloadRow.style.display = 'block';
+    showCompletionSheet(data);
+  } else {
+    // A reload leaves the job idle, but the sheet the last run produced is
+    // still there — the results for it are often filled in days later.
+    showCompletionSheet(data);
+    if (data.completionSheet) downloadRow.style.display = 'block';
   }
 }
 
