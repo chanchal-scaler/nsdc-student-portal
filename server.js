@@ -8,7 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents, fetchCandidatesForBatches } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS, ASSESSMENT_SHEET_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, BATCH_OPTIONAL_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS, ASSESSMENT_SHEET_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
@@ -527,13 +527,20 @@ async function prepareBatches(rows) {
             continue;
         }
 
-        const size = await countStudentsForBatch(row.batchName);
-        if (size === 0) {
+        // Counted from the students uploaded for the batch wherever there are
+        // any, so the number cannot drift from the real intake. Batches and
+        // students can go up in either order, so a batch made first has nobody
+        // to count and says its own size instead.
+        const counted = await countStudentsForBatch(row.batchName);
+        const stated = row.size === undefined || row.size === '' ? null : Number(row.size);
+        const size = counted > 0 ? counted : stated;
+
+        if (!size) {
             blocked.push({
                 ...row,
                 batchId: '',
-                status: 'NO_STUDENTS',
-                error: `No uploaded student names this batch — upload the students for "${row.batchName}" first, so the batch is created with the right size`
+                status: 'NO_SIZE',
+                error: `No uploaded student names "${row.batchName}" and the sheet gives no size — either upload those students first, or put the number of places in a size column. A batch created with no room takes nobody.`
             });
             continue;
         }
@@ -1672,7 +1679,10 @@ app.get('/api/batches/template', requireLogin, (req, res) => {
         'NSDC Market led programme', '1', 'Fee Based', '34735', 'Scheme_1159',
         'TP155158', 'TC205331'
     ];
-    const csv = BATCH_COLUMNS.join(',') + '\n' + example.join(',') + '\n';
+    // The optional column is in the template so a batch made before its students
+    // has somewhere to say its size; left blank it is counted as before.
+    const columns = [...BATCH_COLUMNS, ...BATCH_OPTIONAL_COLUMNS];
+    const csv = columns.join(',') + '\n' + [...example, ''].join(',') + '\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="batch_upload_template.csv"');
     res.send(csv);
