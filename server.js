@@ -1459,7 +1459,7 @@ app.get('/upload', requireLogin, (req, res) => {
 });
 
 app.get('/api/upload/template', requireLogin, (req, res) => {
-    const example = ['Mr.', 'Rahul Sharma', 'male', '1997-04-07', 'Suresh Sharma', 'rahul.sharma@example.com', '9876543210', '91', 'Academy Sep26'];
+    const example = ['Mr.', 'Rahul Sharma', 'male', '1997-04-07', 'Suresh Sharma', 'rahul.sharma@example.com', '9876543210', '91', 'Academy Sep26', ''];
     const csv = TEMPLATE_COLUMNS.join(',') + '\n' + example.join(',') + '\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="student_upload_template.csv"');
