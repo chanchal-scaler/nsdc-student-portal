@@ -89,7 +89,7 @@ function studentRow(student) {
 
   const tr = document.createElement('tr');
   tr.appendChild(text('td', student.name || '—'));
-  tr.appendChild(text('td', student.email));
+  tr.appendChild(text('td', student.email || '—'));
   tr.appendChild(text('td', student.candidateId, 'mono'));
   tr.appendChild(text('td', state.label, 'state ' + state.cls));
   tr.appendChild(text('td', onDateTime(student.enrolledAt || student.addedAt)));
@@ -186,7 +186,7 @@ function missingBlock(batch) {
   for (const student of batch.missing) {
     const tr = document.createElement('tr');
     tr.appendChild(text('td', student.name || '—'));
-    tr.appendChild(text('td', student.email));
+    tr.appendChild(text('td', student.email || '—'));
     tr.appendChild(text('td', student.candidateId, 'mono'));
     tr.appendChild(text('td', onDateTime(student.addedAt)));
     tbody.appendChild(tr);
@@ -400,7 +400,10 @@ async function loadPage() {
 
     const t = data.totals;
     summaryEl.textContent = t.inNsdc === null
-      ? data.total + ' batch(es) and ' + t.students + ' student(s) uploaded from here. ' +
+      // "on record here" rather than "uploaded from here": the count now takes
+      // in learners who were only enrolled from this portal, never uploaded by
+      // it, and saying they were uploaded would be wrong
+      ? data.total + ' batch(es) and ' + t.students + ' student(s) on record here. ' +
         'NSDC has not been read yet, so how many are actually enrolled is not known — read it below.'
       // The count that matters, from NSDC itself
       : t.inNsdc + ' of ' + t.students + ' student(s) are enrolled on NSDC, across ' +
