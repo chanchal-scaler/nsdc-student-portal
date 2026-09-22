@@ -8,14 +8,14 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents, fetchCandidatesForBatches } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, BATCH_OPTIONAL_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, BATCH_OPTIONAL_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS, ASSESSMENT_SHEET_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCompletions, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
     findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
@@ -741,14 +741,57 @@ const enrollJob = {
     stoppedAfter: null,
     serviceDown: false,
     resultFile: null,
-    resultFileName: null
+    resultFileName: null,
+    completionSheet: null
 };
 
 
 // Holds the most recent enrolment payload preview so it can be downloaded whole
 let enrollPreviewFile = null;
 
+let generatedCompletionFile = null;
+
+/**
+ * The completion sheet for the students an enrolment run just put in a batch,
+ * with their candidate and batch IDs already filled in and only the result left
+ * to write. Built from what the run did rather than from the database, so a
+ * learner NSDC registered before this portal — who has no row in `candidates`
+ * for an email to resolve against — still comes out with an ID that works.
+ */
+function buildCompletionSheet(results) {
+    const done = (results || []).filter(r => r.candidateId && r.batchId &&
+        (r.status === 'ENROLLED' || r.status === 'ALREADY_ENROLLED'));
+    if (done.length === 0) {
+        generatedCompletionFile = null;
+        return null;
+    }
+
+    const headers = ['candidateId', 'batchId', 'email', 'batchName', 'result'];
+    const lines = [headers.join(',')];
+    for (const row of done) {
+        // result is left blank: it is the one thing only the uploader knows
+        lines.push(headers.map(h => csvCell(h === 'result' ? '' : row[h])).join(','));
+    }
+
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `completion_sheet_${dateStr}.csv`;
+    const filePath = path.join(DATA_DIR, fileName);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+
+    for (const f of fs.readdirSync(DATA_DIR)) {
+        if (f.startsWith('completion_sheet_') && f !== fileName) {
+            try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
+        }
+    }
+
+    generatedCompletionFile = { path: filePath, name: fileName };
+    return generatedCompletionFile;
+}
+
 function resetEnrollJob() {
+    // The completion sheet is not job state: it is what the last run produced,
+    // and the results for it are often filled in days later. It is left alone
+    // here and replaced only when another run enrols somebody.
     for (const f of fs.readdirSync(DATA_DIR)) {
         if ((f.startsWith('enroll_result_') && f.endsWith('.csv')) ||
             (f.startsWith('enroll_payload_preview_') && f.endsWith('.json'))) {
@@ -944,6 +987,8 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
         }
     }).then(({ enrolled, alreadyEnrolled, failed }) => {
         const { filePath, fileName } = writeEnrollResultCsv([...collected, ...unresolved, ...skipped]);
+        const completionSheet = buildCompletionSheet(collected);
+        enrollJob.completionSheet = completionSheet ? completionSheet.name : null;
 
         enrollJob.state = 'done';
         enrollJob.finishedAt = new Date().toISOString();
@@ -966,6 +1011,8 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
         console.log(`Enrolment complete: ${enrolled} enrolled, ${alreadyEnrolled} already in batch, ${skipped.length} skipped, ${failed + unresolved.length} failed`);
     }).catch(err => {
         const { filePath, fileName } = writeEnrollResultCsv([...collected, ...unresolved, ...skipped]);
+        const completionSheet = buildCompletionSheet(collected);
+        enrollJob.completionSheet = completionSheet ? completionSheet.name : null;
         enrollJob.resultFile = filePath;
         enrollJob.resultFileName = fileName;
         enrollJob.state = 'error';
@@ -1046,25 +1093,38 @@ async function resolveAssessmentRows(rows) {
     const skipped = [];
 
     for (const row of rows) {
-        const candidate = await findCandidateByEmail(row.email);
-        if (!candidate) {
-            unresolved.push({ ...row, status: 'NOT_FOUND', error: 'No candidate ID stored for this email — upload the student first' });
-            continue;
+        // An ID is used as it is. An email is looked up in this portal's own
+        // candidates table, which a learner NSDC registered before the portal
+        // is not in — so a row for them has to carry the ID.
+        let candidateId = row.candidateId || null;
+        let name = null;
+        if (!candidateId) {
+            const candidate = await findCandidateByEmail(row.email);
+            if (!candidate) {
+                unresolved.push({ ...row, status: 'NOT_FOUND', error: 'No candidate ID stored for this email — upload the student first, or give the candidate ID' });
+                continue;
+            }
+            candidateId = candidate.candidate_id;
+            name = candidate.name;
         }
 
-        const batch = await findBatchByName(row.batchName);
-        if (!batch) {
-            unresolved.push({ ...row, candidateId: candidate.candidate_id, status: 'NOT_FOUND', error: `No batch ID stored for "${row.batchName}" — create the batch first` });
-            continue;
+        let batchId = row.batchId ? Number(row.batchId) : null;
+        let batchName = row.batchName || '';
+        if (batchId === null) {
+            const batch = await findBatchByName(batchName);
+            if (!batch) {
+                unresolved.push({ ...row, candidateId, status: 'NOT_FOUND', error: `No batch ID stored for "${batchName}" — create the batch first, or give the batch ID` });
+                continue;
+            }
+            batchId = batch.batch_id;
+            batchName = batch.batch_name;
+        } else {
+            const known = await findBatchById(batchId);
+            if (known) batchName = known.batch_name;
         }
 
-        const resolved = {
-            ...row,
-            candidateId: candidate.candidate_id,
-            batchId: batch.batch_id,
-            batchName: batch.batch_name
-        };
-        const pair = `${candidate.candidate_id}|${batch.batch_id}`;
+        const resolved = { ...row, candidateId, name: row.name || name, batchId, batchName };
+        const pair = `${candidateId}|${batchId}`;
 
         if (completedPairs.has(pair)) {
             skipped.push({ ...resolved, status: 'SKIPPED', error: 'Results already submitted for this batch' });
@@ -1076,9 +1136,9 @@ async function resolveAssessmentRows(rows) {
             continue;
         }
 
-        const key = String(batch.batch_id);
+        const key = String(batchId);
         if (!groups.has(key)) {
-            groups.set(key, { batchId: batch.batch_id, batchName: batch.batch_name, rows: [] });
+            groups.set(key, { batchId, batchName, rows: [] });
         }
         groups.get(key).rows.push(resolved);
     }
@@ -1985,7 +2045,16 @@ app.post('/api/enroll/upload', requireLogin, sheetUpload.single('sheet'), async 
     });
 });
 
-app.get('/api/enroll/status', requireLogin, (req, res) => {
+app.get('/api/enroll/status', requireLogin, async (req, res) => {
+    // Where the run that made the sheet is over and gone — a reload, a restart —
+    // the sheet is still worth offering if anybody is waiting on results.
+    let sheet = enrollJob.completionSheet;
+    if (!sheet && dbEnabled && enrollJob.state !== 'running') {
+        try {
+            sheet = (await pendingCompletions()).length > 0 ? 'completion sheet' : null;
+        } catch { /* the rest of the status is still worth answering with */ }
+    }
+
     res.json({
         state: enrollJob.state,
         startedAt: enrollJob.startedAt,
@@ -2002,8 +2071,34 @@ app.get('/api/enroll/status', requireLogin, (req, res) => {
         serviceDown: Boolean(enrollJob.serviceDown),
         resultReady: Boolean(enrollJob.resultFile),
         resultFileName: enrollJob.resultFileName,
+        completionSheet: sheet,
         dbEnabled
     });
+});
+
+/**
+ * The completion sheet for the students the last enrolment run put in a batch.
+ * Their IDs are filled in and only the result is left blank, so nobody has to
+ * pair an email to a candidate ID by hand — which for a learner NSDC registered
+ * before this portal cannot be done from here at all.
+ */
+app.get('/api/enroll/completion-sheet', requireLogin, async (req, res) => {
+    // Rebuilt from the database where the file from the run is gone — a restart
+    // takes the disk with it, and results are often filled in days later.
+    if (!generatedCompletionFile || !fs.existsSync(generatedCompletionFile.path)) {
+        if (!dbEnabled) {
+            return res.status(404).json({ error: 'No completion sheet available. Enrol some students first.' });
+        }
+        try {
+            buildCompletionSheet((await pendingCompletions()).map(r => ({ ...r, status: 'ENROLLED' })));
+        } catch (err) {
+            console.error('Could not build the completion sheet:', err.message);
+        }
+    }
+    if (!generatedCompletionFile || !fs.existsSync(generatedCompletionFile.path)) {
+        return res.status(404).json({ error: 'No completion sheet available — nobody is enrolled and waiting on results.' });
+    }
+    res.download(generatedCompletionFile.path, generatedCompletionFile.name);
 });
 
 app.get('/api/enroll/result', requireLogin, (req, res) => {
@@ -2160,7 +2255,14 @@ app.get('/complete', requireLogin, (req, res) => {
 });
 
 app.get('/api/complete/template', requireLogin, (req, res) => {
-    const csv = ASSESSMENT_COLUMNS.join(',') + '\n' + 'rahul.sharma@example.com,Academy Jan26,1\n';
+    // Two example rows, two different students, one for each way of naming them.
+    // The first is named by its IDs, which is how a learner NSDC registered
+    // before this portal has to be given; its email and batch name are filled in
+    // as well, and ignored, because a sheet nobody can read is no help. The
+    // second carries no IDs and is looked up by email and batch name as before.
+    const csv = ASSESSMENT_SHEET_COLUMNS.join(',') + '\n' +
+        'CAN_41318794,3952806,past.learner@example.com,SST 2023 Year 3,1\n' +
+        ',,rahul.sharma@example.com,Academy Jan26,0\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="batch_completion_template.csv"');
     res.send(csv);

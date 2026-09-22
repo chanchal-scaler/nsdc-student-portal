@@ -4,6 +4,7 @@ const errorsTitle = document.getElementById('errorsTitle');
 const errorList = document.getElementById('errorList');
 const downloadRow = document.getElementById('downloadRow');
 const fileMeta = document.getElementById('fileMeta');
+const completionSheetRow = document.getElementById('completionSheetRow');
 const banner = document.getElementById('banner');
 const pendingTitle = document.getElementById('pendingTitle');
 const pendingNote = document.getElementById('pendingNote');
@@ -320,6 +321,21 @@ function showValidationErrors(body) {
 }
 
 // All dynamic values are rendered via textContent / DOM nodes, never innerHTML
+// The completion sheet for what a run just enrolled, with the IDs already in it
+// so nobody has to pair an email to a candidate ID by hand.
+function showCompletionSheet(data) {
+  if (!completionSheetRow) return;
+  if (!data.completionSheet) { completionSheetRow.style.display = 'none'; return; }
+  completionSheetRow.style.display = 'block';
+  completionSheetRow.textContent = '';
+  const link = document.createElement('a');
+  link.href = '/api/enroll/completion-sheet';
+  link.textContent = 'Download the completion sheet for these students';
+  completionSheetRow.appendChild(link);
+  completionSheetRow.appendChild(document.createTextNode(
+    ' — candidate and batch IDs filled in, results left blank.'));
+}
+
 function showStatus(cls, text) {
   statusEl.className = 'status ' + cls;
   statusEl.textContent = text;
@@ -428,6 +444,7 @@ async function poll() {
       downloadRow.style.display = 'block';
       fileMeta.textContent = data.resultFileName + ' — finished ' + new Date(data.finishedAt).toLocaleString();
     }
+    showCompletionSheet(data);
   } else if (data.state === 'error') {
     // A run that stopped part way still did real work; say how much, so it is
     // clear what is left rather than looking like nothing happened.
@@ -435,16 +452,24 @@ async function poll() {
       showStatus('error', 'The last run: Skill India (NSDC) was not responding. ' + howFar(data) +
         ' Try again once it is back.');
       if (data.resultReady) downloadRow.style.display = 'block';
+      showCompletionSheet(data);
       return;
     }
 
     if (data.stoppedAfter !== null) {
       showStatus('error', 'The last run stopped early. ' + howFar(data));
       if (data.resultReady) downloadRow.style.display = 'block';
+      showCompletionSheet(data);
       return;
     }
     showStatus('error', 'Enrolment failed: ' + (data.error || 'Unknown error'));
     if (data.resultReady) downloadRow.style.display = 'block';
+    showCompletionSheet(data);
+  } else {
+    // A reload leaves the job idle, but the sheet the last run produced is
+    // still there — the results for it are often filled in days later.
+    showCompletionSheet(data);
+    if (data.completionSheet) downloadRow.style.display = 'block';
   }
 }
 
