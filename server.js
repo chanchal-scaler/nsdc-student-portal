@@ -1907,7 +1907,7 @@ app.get('/api/enroll/mapping', requireLogin, async (req, res) => {
 /**
  * The enrolment sheet: one row per enrolment, which is the one thing the button
  * above cannot express. A student sheet carries a single batch per student, so
- * a student who takes a new batch each year — the SST case — needs a sheet that
+ * a student who takes a new batch each year — SST and SSB — needs a sheet that
  * can name the same student four times.
  */
 app.get('/api/enroll/template', requireLogin, (req, res) => {
@@ -1916,7 +1916,7 @@ app.get('/api/enroll/template', requireLogin, (req, res) => {
         // pair may be left empty and the template is where that is learnt
         'CAN_91234567,4821,,\n' +
         'CAN_91234567,4822,,\n' +
-        ',,rahul.sharma@example.com,SST Jan26\n';
+        ',,rahul.sharma@example.com,SST 2023 CS-AI Year 3\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="enrolment_template.csv"');
     res.send(csv);
