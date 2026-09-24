@@ -1672,17 +1672,40 @@ app.get('/batches', requireLogin, (req, res) => {
 });
 
 app.get('/api/batches/template', requireLogin, (req, res) => {
-    const example = [
-        'Academy Jan26', '10-Jan-2026', '13-Feb-2027', 'FeeSchCor_31336_v1', '1',
-        '1/10/2026 2:00:00', '2/13/2027 2:00:00', '319000', 'Self-Paid',
-        '20-Feb-2027', '21-Feb-2027', 'Self', 'Regular', 'Fee Based',
-        'NSDC Market led programme', '1', 'Fee Based', '34735', 'Scheme_1159',
-        'TP155158', 'TC205331'
+    // The rest of a row is the same whichever programme it is for, so the three
+    // examples differ only in the name and the dates around it: a monthly intake,
+    // and one batch each for the two programmes taught in years, which a month
+    // cannot name. Getting the name wrong is what a batch sheet is refused for,
+    // and a template with one shape in it only teaches that shape.
+    const rest = [
+        'FeeSchCor_31336_v1', '1', '319000', 'Self-Paid', 'Self', 'Regular',
+        'Fee Based', 'NSDC Market led programme', '1', 'Fee Based', '34735',
+        'Scheme_1159', 'TP155158', 'TC205331'
+    ];
+    const example = (batchName, startDate, endDate, startTime, endTime, assessStart, assessEnd) => {
+        const [courseId, hours, fees, paidBy, mode, batchType, type,
+            categoryName, categoryId, categoryScheme, schemeId, schemeRef, tpId, tcId] = rest;
+        return [
+            batchName, startDate, endDate, courseId, hours, startTime, endTime,
+            fees, paidBy, assessStart, assessEnd, mode, batchType, type,
+            categoryName, categoryId, categoryScheme, schemeId, schemeRef, tpId, tcId,
+            // The optional size column, left blank: a batch made after its
+            // students counts them rather than being told a number.
+            ''
+        ];
+    };
+    const examples = [
+        example('Academy Jan26', '10-Jan-2026', '13-Feb-2027',
+            '1/10/2026 2:00:00', '2/13/2027 2:00:00', '20-Feb-2027', '21-Feb-2027'),
+        example('SST 2023 CS-AI Year 3', '01-Jul-2025', '30-Jun-2026',
+            '7/1/2025 2:00:00', '6/30/2026 2:00:00', '06-Jul-2026', '07-Jul-2026'),
+        example('SSB 2024 AI-B Year 1', '01-Aug-2025', '31-Jul-2026',
+            '8/1/2025 2:00:00', '7/31/2026 2:00:00', '06-Aug-2026', '07-Aug-2026')
     ];
     // The optional column is in the template so a batch made before its students
     // has somewhere to say its size; left blank it is counted as before.
     const columns = [...BATCH_COLUMNS, ...BATCH_OPTIONAL_COLUMNS];
-    const csv = columns.join(',') + '\n' + [...example, ''].join(',') + '\n';
+    const csv = columns.join(',') + '\n' + examples.map(row => row.join(',')).join('\n') + '\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="batch_upload_template.csv"');
     res.send(csv);
