@@ -766,11 +766,16 @@ function buildCompletionSheet(results) {
         return null;
     }
 
-    const headers = ['candidateId', 'batchId', 'email', 'batchName', 'result'];
+    // The marks columns come through blank, as the result always has: the
+    // portal knows who is in which batch and nothing about how they did. They
+    // are here so this sheet is one the Completion page accepts — it is the
+    // sheet most results are written on, and a portal handing out a file its own
+    // upload refuses would be the worse half of asking for marks at all.
+    const headers = ['candidateId', 'batchId', 'email', 'batchName', ...ASSESSMENT_COLUMNS];
+    const known = new Set(['candidateId', 'batchId', 'email', 'batchName']);
     const lines = [headers.join(',')];
     for (const row of done) {
-        // result is left blank: it is the one thing only the uploader knows
-        lines.push(headers.map(h => csvCell(h === 'result' ? '' : row[h])).join(','));
+        lines.push(headers.map(h => csvCell(known.has(h) ? row[h] : '')).join(','));
     }
 
     const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
@@ -1147,7 +1152,11 @@ async function resolveAssessmentRows(rows) {
 }
 
 function writeAssessResultCsv(results) {
-    const headers = ['rowNumber', 'email', 'candidateId', 'batchName', 'batchId', 'result', 'status', 'error'];
+    // The marks are in here as well as the outcome: this file is the record of
+    // what was sent, and with the figures no longer fixed there is nowhere else
+    // to read back what went up for a given student.
+    const headers = ['rowNumber', 'email', 'candidateId', 'batchName', 'batchId',
+        'attendance', 'result', 'assessmentPercentage', 'grade', 'status', 'error'];
     const lines = [headers.join(',')];
     const ordered = [...results].sort((a, b) => (a.rowNumber || 0) - (b.rowNumber || 0));
     for (const result of ordered) {
@@ -1170,22 +1179,34 @@ function completionsLeft(groups, collected, unresolved) {
         .filter(r => r.status === 'COMPLETED')
         .map(r => `${r.candidateId}|${r.batchId}`));
 
+    // Carried back with the marks the sheet gave them. Somebody typed a figure
+    // per student to get here; a run that stopped half way must not cost them
+    // that, and the sheet it hands back is refused now if the marks are missing.
+    const marks = row => ({
+        attendance: row.attendance ?? '',
+        assessmentStatus: row.passed === undefined ? '' : (row.passed ? 1 : 0),
+        assessmentPercentage: row.assessmentPercentage ?? '',
+        grade: row.grade || ''
+    });
+
     const left = [];
     for (const group of groups) {
         for (const row of group.rows) {
             if (done.has(`${row.candidateId}|${group.batchId}`)) continue;
             left.push({
-                email: row.email,
+                candidateId: row.candidateId,
+                batchId: group.batchId,
                 batchName: group.batchName,
-                result: row.passed ? 1 : 0
+                ...marks(row)
             });
         }
     }
     for (const row of unresolved || []) {
         left.push({
-            email: row.email,
+            candidateId: row.candidateId || '',
+            batchId: row.batchId || '',
             batchName: row.batchName || '',
-            result: row.passed === undefined ? '' : (row.passed ? 1 : 0)
+            ...marks(row)
         });
     }
     return left;
@@ -2247,7 +2268,7 @@ app.get('/api/runs/:id/remaining', requireLogin, async (req, res) => {
         students: [...TEMPLATE_COLUMNS, 'Batch Name'],
         batches: BATCH_COLUMNS,
         enrolment: ['email', 'candidateId', 'batchName', 'batchId', 'reason'],
-        completion: ASSESSMENT_COLUMNS
+        completion: ASSESSMENT_SHEET_COLUMNS
     };
     const present = Object.keys(run.rows[0]);
     const order = ORDERS[run.flow] || [];
@@ -2282,9 +2303,13 @@ app.get('/api/complete/template', requireLogin, (req, res) => {
     // batch: by the ID NSDC gave it, and by the name this portal stored. The
     // student is named by candidate ID both times — results are written after
     // enrolment, and enrolment is where the IDs come from.
+    //
+    // The marks differ between the two rows and neither is a round number, so
+    // the template cannot be filled in by copying the example down the column,
+    // which is how the fixed figures it replaces would come straight back.
     const csv = ASSESSMENT_SHEET_COLUMNS.join(',') + '\n' +
-        'CAN_41318794,3952806,SST 2023 Year 3,1\n' +
-        'CAN_91234567,,Academy Jan26,0\n';
+        'CAN_41318794,3952806,SST 2023 Year 3,92,1,78,B\n' +
+        'CAN_91234567,,Academy Jan26,64,0,41,D\n';
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="batch_completion_template.csv"');
     res.send(csv);

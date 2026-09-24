@@ -331,6 +331,20 @@ app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
         if (!candidate.assessmentDetails || !candidate.certificationDetails) {
             return res.status(400).json({ message: `Missing assessment or certification details for ${candidate.candidateID}` });
         }
+        // The shapes NSDC's own documentation gives for the marks: whole numbers
+        // for the two percentages, one letter for the grade. Checked here so a
+        // run against the mock fails the way a run against NSDC would, rather
+        // than accepting an empty cell and looking like it worked.
+        const { attendance } = candidate.trainingDetails || {};
+        const { assessmentPercentage, grade } = candidate.assessmentDetails;
+        for (const [field, value] of [['attendance', attendance], ['assessmentPercentage', assessmentPercentage]]) {
+            if (!Number.isInteger(value) || value < 0 || value > 100) {
+                return res.status(400).json({ message: `${field} for ${candidate.candidateID} must be a whole number from 0 to 100, got ${JSON.stringify(value)}` });
+            }
+        }
+        if (!/^[A-Z]$/.test(String(grade))) {
+            return res.status(400).json({ message: `grade for ${candidate.candidateID} must be a single letter, got ${JSON.stringify(grade)}` });
+        }
     }
 
     const allowed = spend(candidates.length);
