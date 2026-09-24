@@ -27,8 +27,9 @@ a batch, paired with that batch as soon as it exists. That covers the ordinary
 case and needs no file.
 
 The sheet next to it covers the case the waiting list cannot express — a student
-who belongs in more than one batch. An SST student sits in a different batch
-each year of their tenure, and a student sheet carries one batch per student. So
+who belongs in more than one batch. An SST or SSB student sits in a different
+batch each year of their tenure, and a student sheet carries one batch per
+student. So
 the enrolment sheet is one row per enrolment, and the same student may appear on
 as many rows as they have batches.
 
@@ -45,9 +46,10 @@ and Batches pages stored. Both forms exist because neither covers everything:
 whoever fills the sheet in will not always have IDs, and a batch created on NSDC
 by hand has no ID stored here for a name to resolve to.
 
-Only batch *names* are held to the `<Programme> <Month><YY>` shape. A batch given
-by ID is already on NSDC under whatever it was called, and refusing the ID over
-the name would put that batch out of reach.
+Only batch *names* are held to a shape: `<Programme> <Month><YY>` for the monthly
+programmes, and `<Programme> <YYYY> <Course> Year <n>` for the ones taught in
+years — SST and SSB. A batch given by ID is already on NSDC under whatever it was
+called, and refusing the ID over the name would put that batch out of reach.
 
 **Preview payload only** resolves every row and shows whose name each ID turned
 out to be, before anything is sent. A candidate ID with a digit wrong is still a
