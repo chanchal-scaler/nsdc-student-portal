@@ -13,10 +13,12 @@
     padding: 1rem;
   }
   .container { max-width: 900px; margin: 3rem auto; }
-  .topnav { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-bottom: 1.25rem;
-    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.375rem; }
-  .topnav a { padding: 0.4rem 0.75rem; border-radius: 7px; font-size: 0.8125rem;
-    color: #4b5563; text-decoration: none; white-space: nowrap; }
+  .topnav { display: flex; gap: 0.25rem; margin-bottom: 1.25rem;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.375rem;
+    overflow-x: auto; scrollbar-width: none; }
+  .topnav::-webkit-scrollbar { display: none; }
+  .topnav a { padding: 0.4rem 0.6rem; border-radius: 7px; font-size: 0.8125rem;
+    color: #4b5563; text-decoration: none; white-space: nowrap; flex: 0 0 auto; }
   .topnav a:hover { background: #f3f4f6; color: #111827; }
   .topnav a.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
@@ -114,7 +116,7 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/history" class="active">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a><a href="/failures">Failures</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/history" class="active">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a><a href="/certificates">Certificates</a><a href="/failures">Failures</a></nav>
     <div class="header">
       <h1>Enrolled so far</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>

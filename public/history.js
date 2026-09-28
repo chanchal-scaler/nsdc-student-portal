@@ -51,7 +51,7 @@ function batchState(batch) {
 
   if (batch.nsdc.inBatch !== null) {
     const onNsdc = batch.nsdc.inBatch;
-    if (batch.nsdc.certified === batch.size) return { label: 'results submitted', cls: 'done' };
+    if (batch.nsdc.certified === batch.size) return { label: 'all certified', cls: 'done' };
     if (onNsdc === 0) return { label: 'none on NSDC yet', cls: 'waiting' };
     if (onNsdc >= batch.size) return { label: 'all ' + batch.size + ' on NSDC', cls: 'part' };
     return { label: onNsdc + ' of ' + batch.size + ' on NSDC', cls: 'part' };
@@ -65,6 +65,7 @@ function batchState(batch) {
 }
 
 const STUDENT_STATES = {
+  CERTIFIED: { label: 'Certificate issued', cls: 'completed' },
   COMPLETED: { label: 'Results submitted', cls: 'completed' },
   ENROLLED: { label: 'Enrolled', cls: 'enrolled' }
 };
@@ -81,7 +82,7 @@ function studentRow(student) {
   // in the batch. The portal's own record is the fallback until a read happens.
   const state = student.onNsdc === true
     ? (student.certifiedOnNsdc
-      ? { label: 'Results submitted (on NSDC)', cls: 'completed' }
+      ? { label: 'Certified (on NSDC)', cls: 'completed' }
       : { label: 'Enrolled (on NSDC)', cls: 'enrolled' })
     : student.onNsdc === false
       ? { label: 'Not on NSDC', cls: 'pending' }
@@ -408,7 +409,7 @@ async function loadPage() {
       // The count that matters, from NSDC itself
       : t.inNsdc + ' of ' + t.students + ' student(s) are enrolled on NSDC, across ' +
         data.total + ' batch(es)' +
-        (t.certified ? ', ' + t.certified + ' with results submitted' : '') + '. ' +
+        (t.certified ? ', ' + t.certified + ' certified' : '') + '. ' +
         (t.missing
           ? t.missing + ' are still to upload.'
           : 'Nothing outstanding.');
