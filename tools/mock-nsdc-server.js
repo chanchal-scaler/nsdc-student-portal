@@ -49,11 +49,13 @@ app.use((req, res, next) => {
     const HANDSHAKE = ['/api/user/v1', '/api/user/v1/getkey', '/api/user/v1/login'];
 
     if (!serviceDown && downAfter !== null && !HANDSHAKE.includes(req.path)) {
-        // The budget is in students, and one enrolment or completion request
-        // carries many, so those endpoints spend it themselves — see spend()
+        // The budget is in students, and one enrolment, completion or
+        // certificate request carries many, so those endpoints spend it
+        // themselves — see spend()
         const perStudentEndpoint =
             req.path === '/api/thirdparty/v1/enroll/Candidate' ||
-            req.path === '/v1/candidates/candidate/pushBatchEachCandidate';
+            req.path === '/v1/candidates/candidate/pushBatchEachCandidate' ||
+            req.path === '/api/v1/cert/certificate';
 
         if (!perStudentEndpoint) {
             if (downAfter <= 0) {
@@ -308,6 +310,8 @@ app.post('/api/thirdparty/v1/enroll/Candidate', (req, res) => {
 });
 
 const completions = [];
+const certificates = [];
+const certifiedPairs = new Set();
 
 app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
     if (!req.get('Authorization')) {
@@ -362,6 +366,39 @@ app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
     res.json({ message: 'Assessment data uploaded successfully', batchId, processed: candidates.length });
 });
 
+/**
+ * Certificate generation, the way NSDC does it: one request for the whole
+ * training partner, with an empty body — `for=trainingPartner` is the entire
+ * instruction and the partner is whoever the request is signed in as.
+ *
+ * Which candidates it acted on is not in the answer, so this certifies whoever
+ * has been completed here and has no certificate yet, and says only how the
+ * request went. The portal finds out who by reading the candidate list back,
+ * where isCertified is recorded per membership.
+ */
+app.post('/api/v1/cert/certificate', (req, res) => {
+    if (req.query.for !== 'trainingPartner') {
+        return res.status(400).json({ message: 'for=trainingPartner is required' });
+    }
+    if (refusedOnPurpose(req, res)) return;
+
+    const eligible = completions.filter(c => !certifiedPairs.has(`${c.batchId}|${c.candidateId}`));
+    const allowed = spend(eligible.length);
+
+    for (const done of eligible.slice(0, allowed)) {
+        certifiedPairs.add(`${done.batchId}|${done.candidateId}`);
+        certificates.push({ batchId: done.batchId, candidateId: done.candidateId, issuedAt: new Date().toISOString() });
+    }
+
+    if (allowed < eligible.length) {
+        log(`certificates: ${allowed} of ${eligible.length} issued, then went down`);
+        return res.status(503).json({ message: 'Service Unavailable' });
+    }
+
+    log(`certificates: issued for ${eligible.length} candidate(s) across the training partner`);
+    res.json({ message: 'Certificate generation completed' });
+});
+
 // Test helpers, not part of the real API
 // A page with buttons rather than URLs to visit: a tab left open on
 /**
@@ -387,9 +424,11 @@ app.post('/v1/candidates/pmkvy/candidates/list', (req, res) => {
                     batchName: '',
                     batchStartDate: batch && batch.body && batch.body.batchStartDate || null,
                     batchEndDate: batch && batch.body && batch.body.batchEndDate || null,
-                    isCertified: completions.some(c =>
-                        c.candidateId === registration.candidateId &&
-                        String(c.batchId) === String(e.batchId)) || null
+                    // Certified, not merely completed: submitting results says
+                    // a candidate should be certified, and the certificate call
+                    // is what actually issues it. Reading this back is how the
+                    // portal finds out who that call covered.
+                    isCertified: certifiedPairs.has(`${e.batchId}|${registration.candidateId}`) || null
                 };
             });
 
@@ -524,6 +563,7 @@ app.get('/_mock/registrations', (_req, res) => res.json(registrations));
 app.get('/_mock/batches', (_req, res) => res.json(createdBatches));
 app.get('/_mock/enrolments', (_req, res) => res.json(enrolments));
 app.get('/_mock/completions', (_req, res) => res.json(completions));
+app.get('/_mock/certificates', (_req, res) => res.json(certificates));
 app.all('/_mock/reset', (_req, res) => {
     refuseMatching = null;
     candidatesByEmail.clear();
@@ -533,6 +573,8 @@ app.all('/_mock/reset', (_req, res) => {
     enrolledPairs.clear();
     enrolments.length = 0;
     completions.length = 0;
+    certificates.length = 0;
+    certifiedPairs.clear();
     res.json({ ok: true });
 });
 
