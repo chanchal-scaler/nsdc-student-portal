@@ -77,6 +77,7 @@
   .file-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
   input[type="file"] { font-size: 0.875rem; }
   .or { margin: 1.5rem 0 1rem; border-top: 1px solid #e5e7eb; padding-top: 1.25rem; }
+  .or h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.5rem; }
   .preview { margin-top: 1.25rem; display: none; }
   .preview h2 { font-size: 0.9375rem; color: #111827; margin-bottom: 0.5rem; }
   .preview pre { max-height: 380px; overflow: auto; background: #111827; color: #e5e7eb;
@@ -142,6 +143,25 @@
         <div class="meta" id="fileMeta"></div>
       </div>
 
+      <div class="or">
+        <h2 id="fetchTitle">Fetch the certificates themselves</h2>
+        <p>Generating a certificate and having a copy of it are two calls. NSDC hands them over one candidate at a time, so this fetches each in turn and puts them in a single zip — a few minutes for a large partner. A run stopped part way keeps what it fetched: starting it again asks only for the rest, and the zip comes out whole either way.</p>
+
+        <div class="pending-actions">
+          <button class="btn btn-primary" id="fetchLastBtn">Fetch the last run's</button>
+          <button class="btn btn-secondary" id="fetchAllBtn">Fetch every certificate</button>
+        </div>
+        <div class="meta" id="fetchNote"></div>
+
+        <div class="status" id="fetchStatus"></div>
+
+        <div class="download-row" id="zipRow">
+          <a class="btn btn-success" href="/api/certificates/download/file" id="zipLink">Download the zip</a>
+          <a class="link-template" href="/api/certificates/download/result">Which ones came back</a>
+          <div class="meta" id="zipMeta"></div>
+        </div>
+      </div>
+
       <div class="preview" id="preview">
         <h2 id="previewTitle">Payload preview</h2>
         <pre id="previewBody"></pre>
@@ -152,5 +172,6 @@
   </div>
 
   <script src="/certificates.js"></script>
+  <script src="/certificates-download.js"></script>
 </body>
 </html>

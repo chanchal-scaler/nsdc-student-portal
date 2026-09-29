@@ -18,6 +18,7 @@ A small login-protected web app that fetches the full student list from the Skil
 | `/enroll` | Enrol the students waiting for a batch, or upload a sheet pairing students with batches |
 | `/complete` | Submit assessment results |
 | `/history` | Enrolled so far — every batch, who is in it, and what NSDC actually holds |
+| `/certificates` | Ask NSDC to issue the certificates a batch has earned, then fetch the files themselves as a zip |
 | `/failures` | Every NSDC call that did not go through: endpoint, timestamp, uploader, payload sent, answer received |
 
 ## Two ways to enrol
@@ -98,6 +99,28 @@ sign-in handshake failed — which is why the rest of the sheet was never tried.
 Filter by flow, by person, by how far back, or search the messages; the same
 list downloads as a CSV. Request payloads are stored whole, which means student
 personal details are in that table and readable by anyone with a portal login.
+
+## Certificates
+
+Two steps, both on `/certificates`.
+
+**Issuing** asks NSDC to certify everyone it considers eligible. There is nothing
+to fill in: NSDC issues per training partner, not per student, and takes no list.
+Candidates who already hold one are left alone, so running it again changes
+nothing.
+
+**Fetching** downloads each certified candidate's PDF and hands them over as one
+zip, named `CAN_<id>_<name>_<batch>.pdf` inside.
+
+The PDFs are cached in `data/certificates/` so a second zip costs nothing and a
+run that stopped can be picked up where it left off. That cache is on the
+container's disk: **a redeploy or restart clears it, and the next fetch pulls
+every certificate from NSDC again.** Nothing about the file is kept in Postgres —
+only the fact that a candidate is certified. The zip is deleted whenever the page
+is reloaded, so download it before navigating away; rebuilding it from the cache
+is quick, but only while that cache is still there.
+
+The lasting copy is the zip you saved, not anything the portal holds.
 
 ## Environment variables
 

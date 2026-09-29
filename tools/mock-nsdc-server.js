@@ -399,6 +399,65 @@ app.post('/api/v1/cert/certificate', (req, res) => {
     res.json({ message: 'Certificate generation completed' });
 });
 
+/**
+ * One candidate's certificate.
+ *
+ * Answers with a real PDF — a minimal one, written by hand rather than by a
+ * library — because the portal reads what comes back by its content type and
+ * checks it starts with %PDF. A stand-in that answered with JSON or a string
+ * would let a mistake through that the real service would catch.
+ *
+ * GET, since that is what the query parameters imply; the real method is not
+ * stated anywhere, so the portal tries GET first and falls back to POST, and
+ * this refuses POST to make sure that fallback is never silently relied on.
+ */
+function certificatePdf(batchId, candidateId) {
+    const text = `Certificate  ${candidateId}  batch ${batchId}`;
+    const content = `BT /F1 14 Tf 60 700 Td (${text}) Tj ET`;
+    const objects = [
+        '<< /Type /Catalog /Pages 2 0 R >>',
+        '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+        '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+        `<< /Length ${content.length} >>\nstream\n${content}\nendstream`,
+        '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+    ];
+
+    let pdf = '%PDF-1.4\n';
+    const offsets = [];
+    objects.forEach((body, i) => {
+        offsets.push(pdf.length);
+        pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+    });
+
+    const xref = pdf.length;
+    pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+    for (const offset of offsets) pdf += String(offset).padStart(10, '0') + ' 00000 n \n';
+    pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+
+    return Buffer.from(pdf, 'latin1');
+}
+
+app.get('/api/v1/cert/uc/singledocdownload', (req, res) => {
+    if (refusedOnPurpose(req, res)) return;
+
+    const { batchId, candidateId, type } = req.query;
+    if (!batchId || !candidateId) {
+        return res.status(400).json({ message: 'batchId and candidateId are required' });
+    }
+    if (type !== 'externalcertificate') {
+        return res.status(400).json({ message: 'type=externalcertificate is required' });
+    }
+    if (!certifiedPairs.has(`${batchId}|${candidateId}`)) {
+        return res.status(404).json({ message: `No certificate for ${candidateId} in batch ${batchId}` });
+    }
+
+    spend(1);
+    log(`certificate downloaded: ${candidateId} from batch ${batchId}`);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${candidateId}.pdf"`);
+    res.send(certificatePdf(batchId, candidateId));
+});
+
 // Test helpers, not part of the real API
 // A page with buttons rather than URLs to visit: a tab left open on
 /**

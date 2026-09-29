@@ -13,13 +13,14 @@ import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
-import { generateCertificates, buildCertificatePayload } from './lib/nsdc-certificates.js';
+import { generateCertificates, buildCertificatePayload, downloadCertificates } from './lib/nsdc-certificates.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
-import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
+import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, certifiedStudents, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
     findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
+import { ZipWriter } from './lib/zip.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -1280,6 +1281,7 @@ const certJob = {
     // Who was waiting when the run started, so the result can say what changed
     waiting: 0,
     certified: 0,
+    certifiedIds: [],
     stillWaiting: 0,
     // What NSDC answered the request with, kept as it arrived
     response: null,
@@ -1299,7 +1301,7 @@ function resetCertJob() {
     }
     Object.assign(certJob, {
         state: 'idle', startedAt: null, finishedAt: null, waiting: 0, certified: 0,
-        stillWaiting: 0, response: null, pagesFetched: 0, totalPages: null,
+        certifiedIds: [], stillWaiting: 0, response: null, pagesFetched: 0, totalPages: null,
         error: null, serviceDown: false, resultFile: null, resultFileName: null
     });
 }
@@ -1408,7 +1410,8 @@ async function startCertJob(waiting, startedBy) {
 
     const { filePath, fileName } = writeCertResultCsv(results);
 
-    certJob.certified = results.filter(r => r.status === 'CERTIFIED').length;
+    certJob.certifiedIds = results.filter(r => r.status === 'CERTIFIED').map(r => r.candidateId);
+    certJob.certified = certJob.certifiedIds.length;
     certJob.stillWaiting = results.length - certJob.certified;
     certJob.resultFile = filePath;
     certJob.resultFileName = fileName;
@@ -1427,6 +1430,192 @@ async function startCertJob(waiting, startedBy) {
         startedAt: certJob.startedAt
     });
     console.log(`Certificates: ${certJob.certified} of ${waiting.length} confirmed certified`);
+}
+
+// ---- Certificate download job (one at a time) ----
+// One request per certificate, written to disk as they arrive so a stopped
+// run keeps what it fetched.
+const certDownloadJob = {
+    state: 'idle', // idle | running | done | error
+    startedAt: null,
+    finishedAt: null,
+    scope: null,
+    processed: 0,
+    total: 0,
+    downloaded: 0,
+    alreadyHad: 0,
+    held: 0,
+    failed: 0,
+    error: null,
+    serviceDown: false,
+    zipFile: null,
+    zipFileName: null,
+    resultFile: null,
+    resultFileName: null
+};
+
+function resetCertDownloadJob() {
+    for (const f of fs.readdirSync(DATA_DIR)) {
+        if ((f.startsWith('certificates_') && f.endsWith('.zip')) ||
+            (f.startsWith('cert_download_result_') && f.endsWith('.csv'))) {
+            try { fs.unlinkSync(path.join(DATA_DIR, f)); } catch { /* best effort */ }
+        }
+    }
+    Object.assign(certDownloadJob, {
+        state: 'idle', startedAt: null, finishedAt: null, scope: null,
+        processed: 0, total: 0, downloaded: 0, alreadyHad: 0, held: 0, failed: 0,
+        error: null, serviceDown: false,
+        zipFile: null, zipFileName: null, resultFile: null, resultFileName: null
+    });
+}
+
+// One file per student, so a restarted run does not re-ask NSDC for what it has.
+const CERT_DIR = path.join(DATA_DIR, 'certificates');
+
+/** What a certificate is called on disk: the two IDs, which cannot collide. */
+function certificateFile(student) {
+    return `${student.candidateId}_${student.batchId}.pdf`;
+}
+
+/**
+ * What a certificate is called inside the zip.
+ *
+ * The candidate ID first, because it is the only part guaranteed to be there
+ * and to be unique; the name and batch after it, so a folder of these can be
+ * read without looking anything up. Anything a file system would object to is
+ * replaced rather than dropped, so two students cannot collapse onto one name.
+ */
+function certificateName(student) {
+    const safe = value => String(value || '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return [safe(student.candidateId), safe(student.name), safe(student.batchName)]
+        .filter(Boolean).join('_') + '.pdf';
+}
+
+function writeCertDownloadResultCsv(results) {
+    const headers = ['candidateId', 'batchId', 'batchName', 'name', 'email', 'status', 'error'];
+    const lines = [headers.join(',')];
+    for (const result of results) {
+        lines.push(headers.map(h => csvCell(result[h])).join(','));
+    }
+
+    const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+    const fileName = `cert_download_result_${dateStr}.csv`;
+    const filePath = path.join(DATA_DIR, fileName);
+    fs.writeFileSync(filePath, lines.join('\n') + '\n', 'utf8');
+    return { filePath, fileName };
+}
+
+async function startCertDownloadJob(students, scope, startedBy) {
+    resetCertDownloadJob();
+
+    certDownloadJob.state = 'running';
+    certDownloadJob.startedAt = new Date().toISOString();
+    certDownloadJob.scope = scope;
+    certDownloadJob.total = students.length;
+
+    fs.mkdirSync(CERT_DIR, { recursive: true });
+
+    // Only the ones not already on disk.
+    const missing = students.filter(s => !fs.existsSync(path.join(CERT_DIR, certificateFile(s))));
+    certDownloadJob.alreadyHad = students.length - missing.length;
+    certDownloadJob.processed = certDownloadJob.alreadyHad;
+
+    const collected = [];
+
+    try {
+        await downloadCertificates({
+            userName: NSDC_UPLOAD_USERNAME,
+            password: NSDC_UPLOAD_PASSWORD,
+            students: missing,
+            onProgress: ({ processed, downloaded, failed }) => {
+                certDownloadJob.processed = certDownloadJob.alreadyHad + processed;
+                certDownloadJob.downloaded = downloaded;
+                certDownloadJob.failed = failed;
+            },
+            onResult: async result => {
+                const { buffer, ...row } = result;
+                collected.push(row);
+                if (result.status !== 'DOWNLOADED') {
+                    noteFailure({
+                        flow: 'certificate-download', startedBy, sourceFile: null,
+                        row: result, subject: result.candidateId, batchName: result.batchName,
+                        error: result.error, call: result.call
+                    });
+                    return;
+                }
+                fs.writeFileSync(path.join(CERT_DIR, certificateFile(result)), buffer);
+            }
+        });
+    } catch (err) {
+        certDownloadJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
+        certDownloadJob.error = certDownloadJob.serviceDown
+            ? `${SERVICE_DOWN_MESSAGE} (${err.message})`
+            : err.message;
+        noteFailure({ flow: 'certificate-download', startedBy, kind: 'run-stopped', error: err });
+    }
+
+    // Everything on disk for these students, so a restarted run still gives one whole zip.
+    const inHand = students.filter(s => fs.existsSync(path.join(CERT_DIR, certificateFile(s))));
+    certDownloadJob.held = inHand.length;
+
+    if (inHand.length > 0) {
+        const dateStr = new Date().toISOString().replace(/[:.]/g, '-');
+        const zipFileName = `certificates_${dateStr}.zip`;
+        const zipPath = path.join(DATA_DIR, zipFileName);
+        const zip = new ZipWriter(fs.createWriteStream(zipPath));
+        const used = new Set();
+
+        for (const student of inHand) {
+            // Two students of the same name in the same batch would otherwise
+            // overwrite each other inside the zip
+            let name = certificateName(student);
+            if (used.has(name)) {
+                const dot = name.lastIndexOf('.');
+                name = `${name.slice(0, dot)}_${student.batchId}${name.slice(dot)}`;
+            }
+            used.add(name);
+            await zip.add(name, fs.readFileSync(path.join(CERT_DIR, certificateFile(student))));
+        }
+        await zip.finish();
+
+        certDownloadJob.zipFile = zipPath;
+        certDownloadJob.zipFileName = zipFileName;
+    }
+
+    // Every student in scope, with what became of them — including the ones this
+    // run never had to ask about
+    const byId = new Map(collected.map(r => [`${r.candidateId}|${r.batchId}`, r]));
+    const results = students.map(student => {
+        const key = `${student.candidateId}|${student.batchId}`;
+        if (byId.has(key)) return byId.get(key);
+        return {
+            ...student,
+            status: fs.existsSync(path.join(CERT_DIR, certificateFile(student))) ? 'ALREADY HELD' : 'NOT FETCHED',
+            error: ''
+        };
+    });
+
+    const { filePath, fileName } = writeCertDownloadResultCsv(results);
+    certDownloadJob.resultFile = filePath;
+    certDownloadJob.resultFileName = fileName;
+
+    certDownloadJob.state = certDownloadJob.error ? 'error' : 'done';
+    certDownloadJob.finishedAt = new Date().toISOString();
+
+    recordRun({
+        flow: 'certificate-download', sourceFile: null,
+        batchNames: [...new Set(students.map(s => s.batchName))],
+        total: students.length,
+        done: inHand.length,
+        failed: students.length - inHand.length,
+        outcome: certDownloadJob.error ? 'stopped' : 'finished',
+        stopReason: certDownloadJob.error ? (certDownloadJob.serviceDown ? 'service-down' : 'error') : null,
+        error: certDownloadJob.error,
+        remaining: students.filter(s => !fs.existsSync(path.join(CERT_DIR, certificateFile(s))))
+            .map(s => ({ candidateId: s.candidateId, batchId: s.batchId, batchName: s.batchName })),
+        startedAt: certDownloadJob.startedAt
+    });
+    console.log(`Certificate download: ${certDownloadJob.downloaded} fetched, ${certDownloadJob.alreadyHad} already held, ${certDownloadJob.failed} failed; zip holds ${inHand.length} of ${students.length}`);
 }
 
 // ---- NSDC read job (one at a time) ----
@@ -2614,6 +2803,90 @@ app.get('/api/certificates/result', requireLogin, (req, res) => {
         return res.status(404).json({ error: 'No result available. Run a certificate job first.' });
     }
     res.download(certJob.resultFile, certJob.resultFileName);
+});
+
+/**
+ * How many certificates there are to fetch, for each of the two scopes the page
+ * offers: the ones the last run certified, and every one on record.
+ */
+app.get('/api/certificates/downloadable', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no record of who is certified' });
+    }
+    try {
+        const everyone = await certifiedStudents();
+        const lastRunIds = certJob.certifiedIds || [];
+        res.json({
+            everyone: everyone.length,
+            lastRun: lastRunIds.length,
+            batches: [...new Set(everyone.map(s => s.batchName).filter(Boolean))]
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/certificates/download', requireLogin, async (req, res) => {
+    if (certDownloadJob.state === 'running') {
+        return res.status(409).json({ error: 'A download is already in progress' });
+    }
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no record of who is certified' });
+    }
+
+    const scope = req.query.scope === 'last' ? 'last' : 'everyone';
+    const students = scope === 'last'
+        ? await certifiedStudents(certJob.certifiedIds || [])
+        : await certifiedStudents();
+
+    if (students.length === 0) {
+        return res.status(422).json({
+            note: scope === 'last'
+                ? 'The last run certified nobody, so there is nothing to fetch. "Download every certificate" takes the ones on record.'
+                : 'Nobody is certified yet — generate certificates first.'
+        });
+    }
+
+    // Not awaited: one request per certificate, so a partner's worth takes
+    // minutes. The page polls.
+    startCertDownloadJob(students, scope === 'last' ? 'the last run' : 'everyone on record', req.session.userEmail);
+    res.json({ started: true, total: students.length });
+});
+
+app.get('/api/certificates/download/status', requireLogin, (req, res) => {
+    res.json({
+        state: certDownloadJob.state,
+        startedAt: certDownloadJob.startedAt,
+        finishedAt: certDownloadJob.finishedAt,
+        scope: certDownloadJob.scope,
+        processed: certDownloadJob.processed,
+        total: certDownloadJob.total,
+        downloaded: certDownloadJob.downloaded,
+        alreadyHad: certDownloadJob.alreadyHad,
+        held: certDownloadJob.held,
+        failed: certDownloadJob.failed,
+        error: certDownloadJob.error,
+        serviceDown: Boolean(certDownloadJob.serviceDown),
+        zipReady: Boolean(certDownloadJob.zipFile),
+        zipFileName: certDownloadJob.zipFileName,
+        resultReady: Boolean(certDownloadJob.resultFile),
+        resultFileName: certDownloadJob.resultFileName,
+        dbEnabled
+    });
+});
+
+app.get('/api/certificates/download/file', requireLogin, (req, res) => {
+    if (!certDownloadJob.zipFile || !fs.existsSync(certDownloadJob.zipFile)) {
+        return res.status(404).json({ error: 'No certificates have been fetched yet.' });
+    }
+    res.download(certDownloadJob.zipFile, certDownloadJob.zipFileName);
+});
+
+app.get('/api/certificates/download/result', requireLogin, (req, res) => {
+    if (!certDownloadJob.resultFile || !fs.existsSync(certDownloadJob.resultFile)) {
+        return res.status(404).json({ error: 'No result available. Fetch some certificates first.' });
+    }
+    res.download(certDownloadJob.resultFile, certDownloadJob.resultFileName);
 });
 
 
