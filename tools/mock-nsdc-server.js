@@ -382,7 +382,11 @@ app.post('/api/v1/cert/certificate', (req, res) => {
     }
     if (refusedOnPurpose(req, res)) return;
 
-    const eligible = completions.filter(c => !certifiedPairs.has(`${c.batchId}|${c.candidateId}`));
+    // A fail carried isCertified: false, so there is nothing to issue.
+    // What the real service does with the flag has not been seen.
+    const eligible = completions.filter(c =>
+        c.body?.certificationDetails?.isCertified !== false &&
+        !certifiedPairs.has(`${c.batchId}|${c.candidateId}`));
     const allowed = spend(eligible.length);
 
     for (const done of eligible.slice(0, allowed)) {

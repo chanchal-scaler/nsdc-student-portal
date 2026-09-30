@@ -47,7 +47,15 @@ function onDateTime(value) {
  */
 function batchState(batch) {
   if (batch.batchId === null) return { label: 'not created yet', cls: 'waiting' };
-  if (batch.size === 0) return { label: 'no students yet', cls: 'waiting' };
+  // Enrolled by candidate ID only: no student row here, but not empty
+  if (batch.size === 0) {
+    const byId = batch.enrolledElsewhere || 0;
+    if (byId === 0) return { label: 'no students yet', cls: 'waiting' };
+    if (batch.nsdc.inBatch === null) return { label: byId + ' by ID', cls: 'part' };
+    if (batch.nsdc.certified === byId) return { label: 'all certified', cls: 'done' };
+    if (batch.nsdc.inBatch >= byId) return { label: 'all ' + byId + ' on NSDC', cls: 'part' };
+    return { label: batch.nsdc.inBatch + ' of ' + byId + ' on NSDC', cls: 'part' };
+  }
 
   if (batch.nsdc.inBatch !== null) {
     const onNsdc = batch.nsdc.inBatch;
@@ -321,7 +329,7 @@ function batchBlock(batch, isLatest) {
   left.appendChild(text('div', batch.batchName, 'batch-name'));
   left.appendChild(text('div',
     (batch.batchId === null ? 'No batch ID yet' : 'Batch ID ' + batch.batchId) +
-    ' · ' + batch.size + ' student(s)' +
+    ' · ' + (batch.size + (batch.enrolledElsewhere || 0)) + ' student(s)' +
     ' · last updated ' + onDateTime(batch.lastActivityAt), 'batch-meta'));
   head.appendChild(left);
 
@@ -332,8 +340,9 @@ function batchBlock(batch, isLatest) {
   if (batch.lastStoppedRun) wrap.appendChild(stoppedNote(batch.lastStoppedRun));
 
   if (batch.students.length === 0) {
-    wrap.appendChild(text('div',
-      'No student on file names this batch yet.', 'batch-empty'));
+    wrap.appendChild(text('div', batch.enrolledElsewhere
+      ? batch.enrolledElsewhere + ' enrolled by candidate ID — names not held here.'
+      : 'No student on file names this batch yet.', 'batch-empty'));
     return wrap;
   }
 
