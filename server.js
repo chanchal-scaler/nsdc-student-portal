@@ -1041,11 +1041,13 @@ function resetAssessJob() {
 /**
  * Resolves assessment rows the way enrolment does, with one extra check:
  * results can only be submitted for a student the portal has recorded as
- * enrolled in that batch. Sending results for someone who was never enrolled
- * would be refused by NSDC anyway, and less legibly.
+ * A row carrying both IDs is taken at its word. Learners NSDC enrolled before
+ * this portal have no enrolment here and never will, and asking for one only
+ * sent people through the enrolment page to collect a 409 they already knew
+ * about. Nothing here checks the pair exists; whatever NSDC answers is
+ * reported.
  */
 async function resolveAssessmentRows(rows) {
-    const enrolledPairs = await getEnrolledPairs();
     const completedPairs = await getCompletedPairs();
     const groups = new Map();
     const unresolved = [];
@@ -1087,11 +1089,6 @@ async function resolveAssessmentRows(rows) {
 
         if (completedPairs.has(pair)) {
             skipped.push({ ...resolved, status: 'SKIPPED', error: 'Results already submitted for this batch' });
-            continue;
-        }
-
-        if (!enrolledPairs.has(pair)) {
-            unresolved.push({ ...resolved, status: 'NOT_ENROLLED', error: 'Not enrolled in this batch — enrol the student first' });
             continue;
         }
 
@@ -1205,7 +1202,8 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
                     batchId: result.batchId,
                     batchName: result.batchName,
                     status: 'COMPLETED',
-                    sourceFile: sourceFileName
+                    sourceFile: sourceFileName,
+                    passed: result.passed
                 });
             } catch (err) {
                 console.error(`Could not record completion for ${result.candidateId}:`, err.message);
@@ -2489,7 +2487,7 @@ app.post('/api/complete/upload', requireLogin, sheetUpload.single('sheet'), asyn
             validRows: 0,
             note: resolved.skipped.length > 0
                 ? `${resolved.skipped.length} row(s) already submitted; nothing left to send.`
-                : 'No row could be matched to an enrolled student.'
+                : 'No row could be matched to a candidate and batch.'
         });
     }
 
