@@ -129,6 +129,16 @@
         <li><strong>No read-back.</strong> The run knows who it asked for, so nothing has to be paged out of NSDC afterwards — what used to take minutes now ends with the last student.</li>
       </ul>
 
+      <div class="or">
+        <p><strong>Check one certificate</strong> — give a candidate and batch already certified on NSDC, and this reads that one certificate back and says what shape it arrived in: the PDF itself, or a link to it. Nothing is generated, nothing is stored, and the certificate stays where it is.</p>
+        <div class="file-row">
+          <input type="text" id="checkCandidate" placeholder="CAN_33690252" style="font-size:0.875rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:8px;width:11rem">
+          <input type="text" id="checkBatch" placeholder="2736691" style="font-size:0.875rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:8px;width:8rem">
+          <button class="btn btn-secondary" id="checkBtn">Check the format</button>
+        </div>
+        <div class="status" id="checkStatus"></div>
+      </div>
+
       <div class="status" id="status"></div>
       <div class="nsdc-note" id="nsdcNote"></div>
 
