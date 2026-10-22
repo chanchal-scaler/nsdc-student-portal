@@ -38,9 +38,9 @@ async function loadPending() {
       return;
     }
 
-    // Shown whether or not anybody is waiting: it is the whole of what gets
-    // sent, and an empty body on a button that acts on everyone is worth seeing.
-    previewTitle.textContent = 'What would be sent';
+    // Shown whether or not anybody is waiting: it is the shape of what gets
+    // sent, and is worth seeing before pressing the button that sends it.
+    previewTitle.textContent = 'What would be sent — one request like this per student';
     previewBody.textContent = 'POST ' + data.url + '\n\n' + JSON.stringify(data.payload, null, 2) +
       '\n\n// signed in as ' + data.tpId + ' — that is how NSDC knows which partner';
     previewEl.style.display = 'block';
@@ -123,29 +123,18 @@ function showRunning(data) {
   spinner.className = 'spinner';
   statusEl.appendChild(spinner);
 
-  if (data.state === 'requesting') {
-    statusEl.appendChild(document.createTextNode('Asking NSDC to issue certificates…'));
-    return;
-  }
-
-  // The read has no total until NSDC answers with one, and the page should not
-  // look stuck in the meantime
-  const pages = data.totalPages
-    ? 'page ' + data.pagesFetched + ' of ' + data.totalPages
-    : data.pagesFetched + ' page(s) read';
   statusEl.appendChild(document.createTextNode(
-    'NSDC took the request. Reading it back to see who was certified — ' + pages
+    'Asking for certificate ' + Math.min(data.processed + 1, data.total) + ' of ' + data.total +
+    ' — ' + data.generated + ' generated, ' + data.failed + ' failed'
   ));
 
-  if (data.totalPages) {
-    const bar = document.createElement('div');
-    bar.className = 'progress-bar';
-    const fill = document.createElement('div');
-    fill.className = 'progress-fill';
-    fill.style.width = Math.round(data.pagesFetched / data.totalPages * 100) + '%';
-    bar.appendChild(fill);
-    statusEl.appendChild(bar);
-  }
+  const bar = document.createElement('div');
+  bar.className = 'progress-bar';
+  const fill = document.createElement('div');
+  fill.className = 'progress-fill';
+  fill.style.width = (data.total ? Math.round(data.processed / data.total * 100) : 0) + '%';
+  bar.appendChild(fill);
+  statusEl.appendChild(bar);
 }
 
 async function poll() {
@@ -162,7 +151,7 @@ async function poll() {
   }
   if (!ownsStatus(token)) return;
 
-  if (data.state === 'requesting' || data.state === 'reading') {
+  if (data.state === 'running') {
     pendingBtn.disabled = true;
     showRunning(data);
     pollTimer = setTimeout(poll, 1500);
@@ -173,30 +162,16 @@ async function poll() {
   loadPending();
 
   if (data.state === 'done') {
-    if (data.error) {
-      // The request went through; only the confirmation did not
-      showStatus('error', data.error);
-    } else {
-      let message = 'Done: ' + data.certified + ' of ' + data.waiting + ' now certified on NSDC';
-      if (data.stillWaiting) message += ', ' + data.stillWaiting + ' not yet';
-      message += '.';
-      if (!data.dbEnabled) message += ' (Not stored in the database: DATABASE_URL is not set.)';
-      showStatus(data.stillWaiting ? 'error' : 'done', message);
-    }
+    let message = 'Done: ' + data.generated + ' of ' + data.total + ' certificate(s) generated';
+    if (data.failed) message += ', ' + data.failed + ' failed';
+    message += '.';
+    if (!data.dbEnabled) message += ' (Not stored in the database: DATABASE_URL is not set.)';
+    showStatus(data.failed ? 'error' : 'done', message);
 
-    if (data.stillWaiting) {
-      showErrors('Not certified yet', [
-        data.stillWaiting + ' student(s) NSDC has not certified. It may not consider them eligible, ' +
-        'or the certificate may not have been issued by the time this read ran — the result CSV names them.'
+    if (data.failed) {
+      showErrors('No certificate asked for', [
+        data.failed + ' student(s) NSDC refused — the result CSV and the Failures page say why, student by student.'
       ]);
-    }
-
-    if (data.response) {
-      previewTitle.textContent = 'What NSDC answered';
-      previewBody.textContent = typeof data.response === 'string'
-        ? data.response
-        : JSON.stringify(data.response, null, 2);
-      previewEl.style.display = 'block';
     }
 
     if (data.resultReady) {
@@ -205,10 +180,16 @@ async function poll() {
     }
   } else if (data.state === 'error') {
     if (data.serviceDown) {
-      showStatus('error', 'Skill India (NSDC) was not responding. Nothing was issued — try again once it is back.');
-    } else {
-      showStatus('error', 'Certificates could not be generated: ' + (data.error || 'Unknown error'));
+      const done = data.stoppedAfter
+        ? data.stoppedAfter + ' of ' + data.total + ' were asked about before it stopped; the rest stay on the waiting list above. '
+        : 'Nothing was asked for — the whole list is still waiting above. ';
+      showStatus('error', 'Skill India (NSDC) was not responding. ' + done +
+        'Try again once it is back — students already certified are left alone.');
+      if (data.resultReady) downloadRow.style.display = 'block';
+      return;
     }
+    showStatus('error', 'Certificates could not be generated: ' + (data.error || 'Unknown error'));
+    if (data.resultReady) downloadRow.style.display = 'block';
   }
 }
 
