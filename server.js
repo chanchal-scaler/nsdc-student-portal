@@ -1265,25 +1265,19 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
 
 // ---- Certificate job (one at a time) ----
 //
-// One request, for the whole training partner: NSDC issues certificates for
-// everyone it considers eligible and says nothing about who they were. So the
-// run is two steps — ask, then read NSDC back to find out who ended up with
-// one. The read is the same one the "Enrolled so far" page uses; it is slow,
-// because the candidate list has no batch filter and has to be paged through,
-// which is why this runs as a job with progress rather than inside a request.
+// One request per student, naming the candidate and the batch, so the run
+// covers exactly the waiting list shown on the page — and already knows who it
+// asked for, which is why there is no read-back step here any more.
 const certJob = {
-    state: 'idle', // idle | requesting | reading | done | error
+    state: 'idle', // idle | running | done | error
     startedAt: null,
     finishedAt: null,
-    // Who was waiting when the run started, so the result can say what changed
-    waiting: 0,
-    certified: 0,
-    stillWaiting: 0,
-    // What NSDC answered the request with, kept as it arrived
-    response: null,
-    pagesFetched: 0,
-    totalPages: null,
+    processed: 0,
+    total: 0,
+    generated: 0,
+    failed: 0,
     error: null,
+    stoppedAfter: null,
     serviceDown: false,
     resultFile: null,
     resultFileName: null
@@ -1296,14 +1290,14 @@ function resetCertJob() {
         }
     }
     Object.assign(certJob, {
-        state: 'idle', startedAt: null, finishedAt: null, waiting: 0, certified: 0,
-        stillWaiting: 0, response: null, pagesFetched: 0, totalPages: null,
-        error: null, serviceDown: false, resultFile: null, resultFileName: null
+        state: 'idle', startedAt: null, finishedAt: null, processed: 0, total: 0,
+        generated: 0, failed: 0, error: null, stoppedAfter: null,
+        serviceDown: false, resultFile: null, resultFileName: null
     });
 }
 
 function writeCertResultCsv(results) {
-    const headers = ['candidateId', 'batchId', 'batchName', 'name', 'email', 'status'];
+    const headers = ['candidateId', 'batchId', 'batchName', 'name', 'email', 'status', 'error'];
     const lines = [headers.join(',')];
     for (const result of results) {
         lines.push(headers.map(h => csvCell(result[h])).join(','));
@@ -1316,115 +1310,104 @@ function writeCertResultCsv(results) {
     return { filePath, fileName };
 }
 
-async function startCertJob(waiting, startedBy) {
+function certificatesLeft(waiting, collected) {
+    const asked = new Set(collected.map(r => `${r.candidateId}|${r.batchId}`));
+    return waiting
+        .filter(w => !asked.has(`${w.candidateId}|${w.batchId}`))
+        .map(w => ({ candidateId: w.candidateId, batchId: w.batchId, batchName: w.batchName }));
+}
+
+function startCertJob(waiting, startedBy) {
     resetCertJob();
 
-    certJob.state = 'requesting';
+    certJob.state = 'running';
     certJob.startedAt = new Date().toISOString();
-    certJob.waiting = waiting.length;
+    certJob.total = waiting.length;
 
-    let asked;
-    try {
-        asked = await generateCertificates({
-            userName: NSDC_UPLOAD_USERNAME,
-            password: NSDC_UPLOAD_PASSWORD
+    // Collected as each student lands, so a run that stops halfway still has a
+    // record of who was asked about — and what was issued stays recorded.
+    const collected = [];
+
+    generateCertificates({
+        userName: NSDC_UPLOAD_USERNAME,
+        password: NSDC_UPLOAD_PASSWORD,
+        students: waiting,
+        onProgress: ({ processed, generated, failed }) => {
+            certJob.processed = processed;
+            certJob.generated = generated;
+            certJob.failed = failed;
+        },
+        onResult: async result => {
+            collected.push(result);
+            if (result.status !== 'GENERATED') {
+                noteFailure({
+                    flow: 'certificate', startedBy,
+                    row: result, subject: result.email || result.candidateId,
+                    batchName: result.batchName, error: result.error, call: result.call
+                });
+                return;
+            }
+            try {
+                await saveEnrollment({
+                    candidateId: result.candidateId,
+                    batchId: result.batchId,
+                    batchName: result.batchName,
+                    status: 'CERTIFIED',
+                    sourceFile: null
+                });
+            } catch (err) {
+                console.error(`Could not record the certificate for ${result.candidateId}:`, err.message);
+            }
+        }
+    }).then(({ generated, failed }) => {
+        const { filePath, fileName } = writeCertResultCsv(collected);
+
+        certJob.state = 'done';
+        certJob.finishedAt = new Date().toISOString();
+        certJob.generated = generated;
+        certJob.failed = failed;
+        certJob.resultFile = filePath;
+        certJob.resultFileName = fileName;
+        recordRun({
+            flow: 'certificate', sourceFile: null,
+            batchNames: [...new Set(waiting.map(w => w.batchName))],
+            total: waiting.length,
+            done: generated,
+            failed,
+            outcome: 'finished',
+            remaining: certificatesLeft(waiting, collected.filter(r => r.status === 'GENERATED')),
+            startedAt: certJob.startedAt
         });
-    } catch (err) {
+        console.log(`Certificates: ${generated} of ${waiting.length} generated, ${failed} failed`);
+    }).catch(err => {
+        if (collected.length > 0) {
+            const { filePath, fileName } = writeCertResultCsv(collected);
+            certJob.resultFile = filePath;
+            certJob.resultFileName = fileName;
+        }
         certJob.state = 'error';
         certJob.finishedAt = new Date().toISOString();
         certJob.serviceDown = Boolean(err.serviceDown) || isServiceDown(err);
         certJob.error = certJob.serviceDown ? `${SERVICE_DOWN_MESSAGE} (${err.message})` : err.message;
+        certJob.stoppedAfter = collected.length;
+        // The call the run gave up on. Recorded as its own entry: the row
+        // failures above say which students NSDC refused, this says why the run
+        // stopped touching the rest of the list.
         noteFailure({ flow: 'certificate', startedBy, kind: 'run-stopped', error: err });
         recordRun({
             flow: 'certificate', sourceFile: null,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
-            total: waiting.length, done: 0, failed: waiting.length,
+            total: waiting.length,
+            done: collected.filter(r => r.status === 'GENERATED').length,
+            failed: collected.filter(r => r.status !== 'GENERATED').length,
             outcome: 'stopped',
             stopReason: certJob.serviceDown ? 'service-down' : 'error',
             error: err.message,
-            remaining: waiting.map(w => ({ candidateId: w.candidateId, batchId: w.batchId, batchName: w.batchName })),
+            remaining: certificatesLeft(waiting, collected.filter(r => r.status === 'GENERATED')),
             startedAt: certJob.startedAt
         });
-        console.error('Certificate request failed:', err.message);
-        return;
-    }
-
-    certJob.response = asked.response || asked.raw || null;
-
-    // NSDC took the request. Which candidates it acted on is only visible in
-    // what it holds, so the second half of the run reads that back.
-    certJob.state = 'reading';
-
-    const batchIds = [...new Set(waiting.map(w => w.batchId))];
-    let certifiedNow = new Set();
-
-    try {
-        const { byBatch } = await fetchCandidatesForBatches({
-            userName: NSDC_USERNAME,
-            password: NSDC_PASSWORD,
-            tpId: TP_ID,
-            batchIds,
-            onProgress: ({ pagesFetched, totalPages }) => {
-                certJob.pagesFetched = pagesFetched;
-                certJob.totalPages = totalPages;
-            }
-        });
-        for (const [batchId, students] of byBatch) {
-            for (const student of students) {
-                if (student.isCertified) certifiedNow.add(`${student.candidateId}|${batchId}`);
-            }
-        }
-    } catch (err) {
-        // The request went through; only the confirmation did not. Saying so is
-        // better than reporting the whole run as failed, which would invite
-        // pressing the button again over work NSDC has already done.
-        certJob.state = 'done';
-        certJob.finishedAt = new Date().toISOString();
-        certJob.error = `The request was accepted, but reading NSDC back to see who was certified failed: ${err.message}`;
-        noteFailure({ flow: 'certificate', startedBy, kind: 'run-stopped', error: err });
-        console.error('Certificate read-back failed:', err.message);
-        return;
-    }
-
-    const results = [];
-    for (const row of waiting) {
-        const certified = certifiedNow.has(`${row.candidateId}|${row.batchId}`);
-        results.push({ ...row, status: certified ? 'CERTIFIED' : 'NOT YET' });
-        if (!certified) continue;
-        try {
-            await saveEnrollment({
-                candidateId: row.candidateId,
-                batchId: row.batchId,
-                batchName: row.batchName,
-                status: 'CERTIFIED',
-                sourceFile: null
-            });
-        } catch (err) {
-            console.error(`Could not record the certificate for ${row.candidateId}:`, err.message);
-        }
-    }
-
-    const { filePath, fileName } = writeCertResultCsv(results);
-
-    certJob.certified = results.filter(r => r.status === 'CERTIFIED').length;
-    certJob.stillWaiting = results.length - certJob.certified;
-    certJob.resultFile = filePath;
-    certJob.resultFileName = fileName;
-    certJob.state = 'done';
-    certJob.finishedAt = new Date().toISOString();
-
-    recordRun({
-        flow: 'certificate', sourceFile: null,
-        batchNames: [...new Set(waiting.map(w => w.batchName))],
-        total: waiting.length,
-        done: certJob.certified,
-        failed: certJob.stillWaiting,
-        outcome: 'finished',
-        remaining: results.filter(r => r.status !== 'CERTIFIED')
-            .map(r => ({ candidateId: r.candidateId, batchId: r.batchId, batchName: r.batchName })),
-        startedAt: certJob.startedAt
+        console.error(`Certificate job stopped after ${collected.length} of ${waiting.length}:`, err);
     });
-    console.log(`Certificates: ${certJob.certified} of ${waiting.length} confirmed certified`);
 }
 
 // ---- NSDC read job (one at a time) ----
@@ -2529,7 +2512,7 @@ app.get('/api/complete/result', requireLogin, (req, res) => {
 });
 
 app.get('/certificates', requireLogin, (req, res) => {
-    if (certJob.state !== 'requesting' && certJob.state !== 'reading') {
+    if (certJob.state !== 'running') {
         resetCertJob();
     }
     res.sendFile(path.join(__dirname, 'views', 'certificates.html'));
@@ -2538,9 +2521,8 @@ app.get('/certificates', requireLogin, (req, res) => {
 /**
  * Everyone whose results are in and who has no certificate recorded here.
  *
- * Shown rather than acted on: the request asks NSDC to certify the training
- * partner's eligible candidates and takes no list, so this says who the run is
- * expected to cover, not who it will be told to cover.
+ * This list is what the run will send, one request per row — not a guess at
+ * what NSDC might cover, which is what it was when the request took no list.
  */
 app.get('/api/certificates/pending', requireLogin, async (req, res) => {
     if (!dbEnabled) {
@@ -2558,7 +2540,9 @@ app.get('/api/certificates/pending', requireLogin, async (req, res) => {
             total: pending.length,
             batches: [...batches.values()],
             rows: pending.slice(0, 50),
-            payload: buildCertificatePayload(),
+            payload: pending.length > 0
+                ? buildCertificatePayload(pending[0].candidateId, pending[0].batchId)
+                : buildCertificatePayload('CAN_00000000', 0),
             url: `${NSDC_BASE_URL}/api/v1/cert/certificate?for=trainingPartner`,
             tpId: TP_ID
         });
@@ -2568,7 +2552,7 @@ app.get('/api/certificates/pending', requireLogin, async (req, res) => {
 });
 
 app.post('/api/certificates/generate', requireLogin, async (req, res) => {
-    if (certJob.state === 'requesting' || certJob.state === 'reading') {
+    if (certJob.state === 'running') {
         return res.status(409).json({ error: 'A certificate run is already in progress' });
     }
     if (!dbEnabled) {
@@ -2582,10 +2566,10 @@ app.post('/api/certificates/generate', requireLogin, async (req, res) => {
         });
     }
 
-    // Not awaited: the read-back pages the whole candidate list and takes
-    // minutes. The page polls for how it went.
+    // Not awaited: one request per student, so a long list is a long run. The
+    // page polls for how it is going.
     startCertJob(waiting, req.session.userEmail);
-    res.json({ started: true, waiting: waiting.length });
+    res.json({ started: true, total: waiting.length });
 });
 
 app.get('/api/certificates/status', requireLogin, (req, res) => {
@@ -2593,13 +2577,12 @@ app.get('/api/certificates/status', requireLogin, (req, res) => {
         state: certJob.state,
         startedAt: certJob.startedAt,
         finishedAt: certJob.finishedAt,
-        waiting: certJob.waiting,
-        certified: certJob.certified,
-        stillWaiting: certJob.stillWaiting,
-        response: certJob.response,
-        pagesFetched: certJob.pagesFetched,
-        totalPages: certJob.totalPages,
+        processed: certJob.processed,
+        total: certJob.total,
+        generated: certJob.generated,
+        failed: certJob.failed,
         error: certJob.error,
+        stoppedAfter: certJob.stoppedAfter,
         serviceDown: Boolean(certJob.serviceDown),
         resultReady: Boolean(certJob.resultFile),
         resultFileName: certJob.resultFileName,

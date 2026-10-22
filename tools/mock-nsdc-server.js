@@ -367,14 +367,8 @@ app.post('/v1/candidates/candidate/pushBatchEachCandidate', (req, res) => {
 });
 
 /**
- * Certificate generation, the way NSDC does it: one request for the whole
- * training partner, with an empty body — `for=trainingPartner` is the entire
- * instruction and the partner is whoever the request is signed in as.
- *
- * Which candidates it acted on is not in the answer, so this certifies whoever
- * has been completed here and has no certificate yet, and says only how the
- * request went. The portal finds out who by reading the candidate list back,
- * where isCertified is recorded per membership.
+ * Certificate generation, one candidate at a time: the body names the
+ * candidate (as userName) and the batch, and only that pair is certified.
  */
 app.post('/api/v1/cert/certificate', (req, res) => {
     if (req.query.for !== 'trainingPartner') {
@@ -382,25 +376,36 @@ app.post('/api/v1/cert/certificate', (req, res) => {
     }
     if (refusedOnPurpose(req, res)) return;
 
-    // A fail carried isCertified: false, so there is nothing to issue.
-    // What the real service does with the flag has not been seen.
-    const eligible = completions.filter(c =>
-        c.body?.certificationDetails?.isCertified !== false &&
-        !certifiedPairs.has(`${c.batchId}|${c.candidateId}`));
-    const allowed = spend(eligible.length);
-
-    for (const done of eligible.slice(0, allowed)) {
-        certifiedPairs.add(`${done.batchId}|${done.candidateId}`);
-        certificates.push({ batchId: done.batchId, candidateId: done.candidateId, issuedAt: new Date().toISOString() });
+    const { userName, batchId } = req.body || {};
+    if (!userName || !batchId) {
+        return res.status(400).json({ message: 'Mandatory field(s) missing: userName, batchId' });
     }
 
-    if (allowed < eligible.length) {
-        log(`certificates: ${allowed} of ${eligible.length} issued, then went down`);
+    const pair = `${batchId}|${userName}`;
+    const completion = completions.find(c =>
+        String(c.batchId) === String(batchId) && c.candidateId === userName);
+
+    if (!completion) {
+        return res.status(400).json({ message: `No assessment record for ${userName} in batch ${batchId}` });
+    }
+    // A fail carried isCertified: false, so there is nothing to issue.
+    // What the real service does with the flag has not been seen.
+    if (completion.body?.certificationDetails?.isCertified === false) {
+        return res.status(400).json({ message: `${userName} did not pass in batch ${batchId}; no certificate to issue` });
+    }
+    if (certifiedPairs.has(pair)) {
+        log(`certificate already issued: ${userName} in batch ${batchId}`);
+        return res.json({ message: 'Certificate already issued' });
+    }
+
+    if (spend(1) < 1) {
         return res.status(503).json({ message: 'Service Unavailable' });
     }
 
-    log(`certificates: issued for ${eligible.length} candidate(s) across the training partner`);
-    res.json({ message: 'Certificate generation completed' });
+    certifiedPairs.add(pair);
+    certificates.push({ batchId, candidateId: userName, issuedAt: new Date().toISOString() });
+    log(`certificate issued: ${userName} in batch ${batchId}`);
+    res.json({ message: 'Certificate generation completed', candidateId: userName, batchId });
 });
 
 // Test helpers, not part of the real API
