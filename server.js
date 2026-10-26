@@ -13,13 +13,14 @@ import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
-import { generateCertificates, buildCertificatePayload, checkOneCertificate } from './lib/nsdc-certificates.js';
-import { createStore, keep as keepCertificate } from './lib/certificate-store.js';
+import { generateCertificates, buildCertificatePayload } from './lib/nsdc-certificates.js';
+import { createStore, keep as keepCertificate, storeKind } from './lib/certificate-store.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
-    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef } from './lib/db.js';
+    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure,
+    saveCertificateRef, saveCertificateEmail, certifiedNotSent, certificateRecords } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1386,6 +1387,11 @@ function startCertJob(waiting, startedBy) {
                     certJob.certificateFormat = download.link ? 'link' : 'pdf';
                     row.certificateFormat = download.link ? 'link' : download.format;
                     row.certificateRef = kept.ref;
+                    await saveCertificateEmail({
+                        candidateId: result.candidateId,
+                        batchId: result.batchId,
+                        email: result.email
+                    });
                 } catch (err) {
                     certJob.downloadFailed++;
                     row.downloadError = `Could not keep the certificate: ${err.message}`;
@@ -2643,33 +2649,76 @@ app.get('/api/certificates/result', requireLogin, (req, res) => {
     res.download(certJob.resultFile, certJob.resultFileName);
 });
 
-app.post('/api/certificates/check', requireLogin, async (req, res) => {
-    const candidateId = String(req.body.candidateId || '').trim().toUpperCase();
-    const batchId = Number(String(req.body.batchId || '').trim());
-
-    if (!/^CAN_\d+$/.test(candidateId)) {
-        return res.status(400).json({ error: `candidateId "${req.body.candidateId || ''}" is not a candidate ID — they read as CAN_ followed by digits` });
+app.get('/api/certificates/sendable', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no record of who is certified' });
     }
-    if (!Number.isInteger(batchId) || batchId < 1) {
-        return res.status(400).json({ error: `batchId "${req.body.batchId || ''}" is not a batch ID — they are whole numbers` });
-    }
-
     try {
-        const answer = await checkOneCertificate({
-            userName: NSDC_USERNAME,
-            password: NSDC_PASSWORD,
-            candidateId,
-            batchId
+        const waiting = await certifiedNotSent();
+        const batches = new Map();
+        for (const row of waiting) {
+            const key = String(row.batchId);
+            if (!batches.has(key)) {
+                batches.set(key, { batchId: row.batchId, batchName: row.batchName, students: 0 });
+            }
+            batches.get(key).students++;
+        }
+        res.json({
+            total: waiting.length,
+            withoutEmail: waiting.filter(r => !r.email).length,
+            batches: [...batches.values()],
+            rows: waiting.slice(0, 50).map(r => ({
+                candidateId: r.candidateId,
+                batchId: r.batchId,
+                batchName: r.batchName,
+                name: r.name || '',
+                email: r.email || '',
+                storageKind: r.storageKind
+            })),
+            storeKind
         });
-        res.json({ candidateId, batchId, ...answer });
     } catch (err) {
-        noteFailure({
-            flow: 'certificate', startedBy: req.session.userEmail,
-            subject: candidateId, error: err, call: err.call
-        });
-        res.status(502).json({ error: err.message, httpStatus: err.httpStatus || null });
+        res.status(500).json({ error: err.message });
     }
 });
+
+app.post('/api/certificates/send/preview', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no record of who is certified' });
+    }
+    try {
+        const waiting = await certifiedNotSent();
+        const sendable = waiting.filter(r => r.email);
+        const unreachable = waiting.filter(r => !r.email);
+        const records = await certificateRecords(sendable);
+
+        res.json({
+            total: waiting.length,
+            sendable: sendable.length,
+            unreachableCount: unreachable.length,
+            unreachable: unreachable.slice(0, 200).map(r => ({
+                candidateId: r.candidateId,
+                batchName: r.batchName,
+                reason: 'No email address on record — upload the student, or read NSDC back'
+            })),
+            rows: sendable.slice(0, 200).map(r => {
+                const seen = records.get(`${r.candidateId}|${r.batchId}`);
+                return {
+                    candidateId: r.candidateId,
+                    batchId: r.batchId,
+                    batchName: r.batchName,
+                    name: r.name || '',
+                    email: r.email,
+                    attachment: `${r.candidateId}.pdf`,
+                    sentBefore: seen && seen.sendCount ? seen.sendCount : 0
+                };
+            })
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 
 
 /**

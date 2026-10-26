@@ -130,13 +130,25 @@
       </ul>
 
       <div class="or">
-        <p><strong>Check one certificate</strong> — give a candidate and batch already certified on NSDC, and this reads that one certificate back and says what shape it arrived in: the PDF itself, or a link to it. Nothing is generated, nothing is stored, and the certificate stays where it is.</p>
-        <div class="file-row">
-          <input type="text" id="checkCandidate" placeholder="CAN_33690252" style="font-size:0.875rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:8px;width:11rem">
-          <input type="text" id="checkBatch" placeholder="2736691" style="font-size:0.875rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:8px;width:8rem">
-          <button class="btn btn-secondary" id="checkBtn">Check the format</button>
+        <h2 style="font-size:1rem;color:#111827;margin-bottom:0.5rem">Waiting on an email</h2>
+        <p id="sendableNote">Reading who has a certificate here and has not been emailed it…</p>
+        <div class="pending-actions">
+          <button class="btn btn-secondary" id="previewSendBtn">Preview what would be sent</button>
         </div>
-        <div class="status" id="checkStatus"></div>
+        <div class="status" id="sendStatus"></div>
+        <div class="resolved" id="sendPreview">
+          <h2 id="sendPreviewTitle">What would be sent</h2>
+          <div class="resolved-scroll">
+            <table>
+              <thead><tr><th>Student</th><th>Email</th><th>Batch</th><th>Attachment</th><th>Sent before</th></tr></thead>
+              <tbody id="sendPreviewBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="errors" id="sendErrors">
+          <h2 id="sendErrorsTitle">Cannot be reached</h2>
+          <ul id="sendErrorList"></ul>
+        </div>
       </div>
 
       <div class="status" id="status"></div>
@@ -162,5 +174,6 @@
   </div>
 
   <script src="/certificates.js"></script>
+  <script src="/certificates-send.js"></script>
 </body>
 </html>

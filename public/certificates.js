@@ -25,61 +25,7 @@ const ownsStatus = token => token === statusToken;
 
 pendingBtn.addEventListener('click', generate);
 
-const checkBtn = document.getElementById('checkBtn');
-const checkStatus = document.getElementById('checkStatus');
-checkBtn.addEventListener('click', checkFormat);
 
-async function checkFormat() {
-  const candidateId = document.getElementById('checkCandidate').value.trim();
-  const batchId = document.getElementById('checkBatch').value.trim();
-  if (!candidateId || !batchId) {
-    checkStatus.className = 'status error';
-    checkStatus.textContent = 'Fill in both the candidate ID and the batch ID.';
-    return;
-  }
-
-  checkBtn.disabled = true;
-  checkStatus.className = 'status running';
-  checkStatus.textContent = 'Signing in and reading that one certificate…';
-
-  let res, body;
-  try {
-    res = await fetch('/api/certificates/check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ candidateId, batchId })
-    });
-    if (res.status === 401) return location.href = '/login';
-    body = await res.json();
-  } catch (err) {
-    checkBtn.disabled = false;
-    checkStatus.className = 'status error';
-    checkStatus.textContent = 'Could not check: ' + err.message;
-    return;
-  }
-
-  checkBtn.disabled = false;
-
-  if (!res.ok) {
-    checkStatus.className = 'status error';
-    checkStatus.textContent = 'NSDC refused it: ' + (body.error || 'unknown error') +
-      (body.httpStatus ? ' (HTTP ' + body.httpStatus + ')' : '');
-    return;
-  }
-
-  checkStatus.className = 'status done';
-  if (body.format === 'pdf') {
-    checkStatus.textContent = 'ANSWER: the PDF itself — ' + body.bytes + ' bytes (content-type ' + body.contentType + '). ' +
-      'Files come back, so storing them (S3) is needed.';
-  } else if (body.format === 'link') {
-    checkStatus.textContent = 'ANSWER: a LINK — ' + body.link + ' — no file comes back, so no bucket is ever needed; the link itself can be kept.';
-  } else if (body.format === 'base64 file in JSON') {
-    checkStatus.textContent = 'ANSWER: the file, base64-encoded inside JSON — ' + body.bytes + ' chars. Still a file, so storing it (S3) is needed.';
-  } else {
-    checkStatus.textContent = 'Unexpected answer (' + body.format + ', content-type ' + body.contentType + '): ' +
-      (body.body || body.firstBytes || '');
-  }
-}
 
 /** Who this portal expects the run to cover, and what it will send. */
 async function loadPending() {
@@ -216,6 +162,7 @@ async function poll() {
 
   pendingBtn.disabled = false;
   loadPending();
+  document.dispatchEvent(new Event('certificates:done'));
 
   if (data.state === 'done') {
     let message = 'Done: ' + data.generated + ' of ' + data.total + ' certificate(s) generated';
