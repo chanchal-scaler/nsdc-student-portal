@@ -13,12 +13,13 @@ import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
-import { generateCertificates, buildCertificatePayload } from './lib/nsdc-certificates.js';
+import { generateCertificates, buildCertificatePayload, checkOneCertificate } from './lib/nsdc-certificates.js';
+import { createStore, keep as keepCertificate } from './lib/certificate-store.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
-    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure } from './lib/db.js';
+    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1275,6 +1276,9 @@ const certJob = {
     processed: 0,
     total: 0,
     generated: 0,
+    downloaded: 0,
+    downloadFailed: 0,
+    certificateFormat: null,
     failed: 0,
     error: null,
     stoppedAfter: null,
@@ -1282,6 +1286,8 @@ const certJob = {
     resultFile: null,
     resultFileName: null
 };
+
+const certStore = createStore(path.join(DATA_DIR, 'certificates'));
 
 function resetCertJob() {
     for (const f of fs.readdirSync(DATA_DIR)) {
@@ -1291,13 +1297,15 @@ function resetCertJob() {
     }
     Object.assign(certJob, {
         state: 'idle', startedAt: null, finishedAt: null, processed: 0, total: 0,
-        generated: 0, failed: 0, error: null, stoppedAfter: null,
+        generated: 0, downloaded: 0, downloadFailed: 0, certificateFormat: null,
+        failed: 0, error: null, stoppedAfter: null,
         serviceDown: false, resultFile: null, resultFileName: null
     });
 }
 
 function writeCertResultCsv(results) {
-    const headers = ['candidateId', 'batchId', 'batchName', 'name', 'email', 'status', 'error'];
+    const headers = ['candidateId', 'batchId', 'batchName', 'name', 'email', 'status',
+        'certificateFormat', 'certificateRef', 'downloadError', 'error'];
     const lines = [headers.join(',')];
     for (const result of results) {
         lines.push(headers.map(h => csvCell(result[h])).join(','));
@@ -1338,8 +1346,8 @@ function startCertJob(waiting, startedBy) {
             certJob.failed = failed;
         },
         onResult: async result => {
-            collected.push(result);
             if (result.status !== 'GENERATED') {
+                collected.push(result);
                 noteFailure({
                     flow: 'certificate', startedBy,
                     row: result, subject: result.email || result.candidateId,
@@ -1358,6 +1366,41 @@ function startCertJob(waiting, startedBy) {
             } catch (err) {
                 console.error(`Could not record the certificate for ${result.candidateId}:`, err.message);
             }
+
+            const { download, ...row } = result;
+            if (download && !download.error) {
+                try {
+                    const kept = await keepCertificate(certStore, {
+                        candidateId: result.candidateId,
+                        batchId: result.batchId,
+                        buffer: download.buffer,
+                        link: download.link
+                    });
+                    await saveCertificateRef({
+                        candidateId: result.candidateId,
+                        batchId: result.batchId,
+                        kind: kept.kind,
+                        ref: kept.ref
+                    });
+                    certJob.downloaded++;
+                    certJob.certificateFormat = download.link ? 'link' : 'pdf';
+                    row.certificateFormat = download.link ? 'link' : download.format;
+                    row.certificateRef = kept.ref;
+                } catch (err) {
+                    certJob.downloadFailed++;
+                    row.downloadError = `Could not keep the certificate: ${err.message}`;
+                    console.error(`Could not keep the certificate for ${result.candidateId}:`, err.message);
+                }
+            } else if (download) {
+                certJob.downloadFailed++;
+                row.downloadError = download.error;
+                noteFailure({
+                    flow: 'certificate', startedBy,
+                    row, subject: result.email || result.candidateId,
+                    batchName: result.batchName, error: download.error, call: download.call
+                });
+            }
+            collected.push(row);
         }
     }).then(({ generated, failed }) => {
         const { filePath, fileName } = writeCertResultCsv(collected);
@@ -2580,6 +2623,9 @@ app.get('/api/certificates/status', requireLogin, (req, res) => {
         processed: certJob.processed,
         total: certJob.total,
         generated: certJob.generated,
+        downloaded: certJob.downloaded,
+        downloadFailed: certJob.downloadFailed,
+        certificateFormat: certJob.certificateFormat,
         failed: certJob.failed,
         error: certJob.error,
         stoppedAfter: certJob.stoppedAfter,
@@ -2595,6 +2641,34 @@ app.get('/api/certificates/result', requireLogin, (req, res) => {
         return res.status(404).json({ error: 'No result available. Run a certificate job first.' });
     }
     res.download(certJob.resultFile, certJob.resultFileName);
+});
+
+app.post('/api/certificates/check', requireLogin, async (req, res) => {
+    const candidateId = String(req.body.candidateId || '').trim().toUpperCase();
+    const batchId = Number(String(req.body.batchId || '').trim());
+
+    if (!/^CAN_\d+$/.test(candidateId)) {
+        return res.status(400).json({ error: `candidateId "${req.body.candidateId || ''}" is not a candidate ID — they read as CAN_ followed by digits` });
+    }
+    if (!Number.isInteger(batchId) || batchId < 1) {
+        return res.status(400).json({ error: `batchId "${req.body.batchId || ''}" is not a batch ID — they are whole numbers` });
+    }
+
+    try {
+        const answer = await checkOneCertificate({
+            userName: NSDC_USERNAME,
+            password: NSDC_PASSWORD,
+            candidateId,
+            batchId
+        });
+        res.json({ candidateId, batchId, ...answer });
+    } catch (err) {
+        noteFailure({
+            flow: 'certificate', startedBy: req.session.userEmail,
+            subject: candidateId, error: err, call: err.call
+        });
+        res.status(502).json({ error: err.message, httpStatus: err.httpStatus || null });
+    }
 });
 
 
