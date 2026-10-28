@@ -408,6 +408,26 @@ app.post('/api/v1/cert/certificate', (req, res) => {
     res.json({ message: 'Certificate generation completed', candidateId: userName, batchId });
 });
 
+app.get('/api/v1/cert/uc/singledocdownload', (req, res) => {
+    if (refusedOnPurpose(req, res)) return;
+
+    const { batchId, candidateId, type } = req.query;
+    if (!batchId || !candidateId) {
+        return res.status(400).json({ message: 'batchId and candidateId are required' });
+    }
+    if (type !== 'externalcertificate') {
+        return res.status(400).json({ message: 'type=externalcertificate is required' });
+    }
+    if (!certifiedPairs.has(`${batchId}|${candidateId}`)) {
+        return res.status(404).json({ message: `No certificate for ${candidateId} in batch ${batchId}` });
+    }
+
+    log(`certificate downloaded: ${candidateId} from batch ${batchId}`);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${candidateId}.pdf"`);
+    res.send(Buffer.from(`%PDF-1.4\n% mock certificate for ${candidateId} in batch ${batchId}\n%%EOF\n`));
+});
+
 // Test helpers, not part of the real API
 // A page with buttons rather than URLs to visit: a tab left open on
 /**
