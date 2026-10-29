@@ -25,61 +25,7 @@ const ownsStatus = token => token === statusToken;
 
 pendingBtn.addEventListener('click', generate);
 
-const checkBtn = document.getElementById('checkBtn');
-const checkStatus = document.getElementById('checkStatus');
-checkBtn.addEventListener('click', checkFormat);
 
-async function checkFormat() {
-  const candidateId = document.getElementById('checkCandidate').value.trim();
-  const batchId = document.getElementById('checkBatch').value.trim();
-  if (!candidateId || !batchId) {
-    checkStatus.className = 'status error';
-    checkStatus.textContent = 'Fill in both the candidate ID and the batch ID.';
-    return;
-  }
-
-  checkBtn.disabled = true;
-  checkStatus.className = 'status running';
-  checkStatus.textContent = 'Signing in and reading that one certificate…';
-
-  let res, body;
-  try {
-    res = await fetch('/api/certificates/check', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ candidateId, batchId })
-    });
-    if (res.status === 401) return location.href = '/login';
-    body = await res.json();
-  } catch (err) {
-    checkBtn.disabled = false;
-    checkStatus.className = 'status error';
-    checkStatus.textContent = 'Could not check: ' + err.message;
-    return;
-  }
-
-  checkBtn.disabled = false;
-
-  if (!res.ok) {
-    checkStatus.className = 'status error';
-    checkStatus.textContent = 'NSDC refused it: ' + (body.error || 'unknown error') +
-      (body.httpStatus ? ' (HTTP ' + body.httpStatus + ')' : '');
-    return;
-  }
-
-  checkStatus.className = 'status done';
-  if (body.format === 'pdf') {
-    checkStatus.textContent = 'ANSWER: the PDF itself — ' + body.bytes + ' bytes (content-type ' + body.contentType + '). ' +
-      'Files come back, so storing them (S3) is needed.';
-  } else if (body.format === 'link') {
-    checkStatus.textContent = 'ANSWER: a LINK — ' + body.link + ' — no file comes back, so no bucket is ever needed; the link itself can be kept.';
-  } else if (body.format === 'base64 file in JSON') {
-    checkStatus.textContent = 'ANSWER: the file, base64-encoded inside JSON — ' + body.bytes + ' chars. Still a file, so storing it (S3) is needed.';
-  } else {
-    checkStatus.textContent = 'Unexpected answer (' + body.format + ', content-type ' + body.contentType + '): ' +
-      (body.body || body.firstBytes || '');
-  }
-}
 
 /** Who this portal expects the run to cover, and what it will send. */
 async function loadPending() {
@@ -257,3 +203,128 @@ async function poll() {
 
 loadPending();
 poll();
+
+const sheetInput = document.getElementById('sheetInput');
+const sheetPreviewBtn = document.getElementById('sheetPreviewBtn');
+const sheetUploadBtn = document.getElementById('sheetUploadBtn');
+const sheetResolved = document.getElementById('sheetResolved');
+const sheetResolvedTitle = document.getElementById('sheetResolvedTitle');
+const sheetResolvedBody = document.getElementById('sheetResolvedBody');
+const sheetPreview = document.getElementById('sheetPreview');
+const sheetPreviewTitle = document.getElementById('sheetPreviewTitle');
+const sheetPreviewBody = document.getElementById('sheetPreviewBody');
+const sheetErrors = document.getElementById('sheetErrors');
+const sheetErrorsTitle = document.getElementById('sheetErrorsTitle');
+const sheetErrorList = document.getElementById('sheetErrorList');
+
+sheetPreviewBtn.addEventListener('click', () => sendSheet('/api/certificates/preview', false));
+sheetUploadBtn.addEventListener('click', () => sendSheet('/api/certificates/upload', true));
+
+function clearSheet() {
+  sheetResolved.style.display = 'none';
+  sheetPreview.style.display = 'none';
+  sheetErrors.style.display = 'none';
+}
+
+function showSheetErrors(title, messages) {
+  sheetErrorsTitle.textContent = title;
+  sheetErrorList.textContent = '';
+  for (const message of messages) {
+    const li = document.createElement('li');
+    li.textContent = message;
+    sheetErrorList.appendChild(li);
+  }
+  sheetErrors.style.display = 'block';
+}
+
+function showSheetResolved(rows) {
+  sheetResolvedBody.textContent = '';
+  if (rows.length === 0) {
+    sheetResolved.style.display = 'none';
+    return;
+  }
+  for (const row of rows) {
+    const tr = document.createElement('tr');
+    const cells = [
+      { text: String(row.row) },
+      { text: row.candidateId },
+      { text: row.name || 'not known to this portal', unknown: !row.known },
+      { text: String(row.batchId) },
+      { text: row.batchName || 'not known to this portal', unknown: !row.batchName }
+    ];
+    for (const cell of cells) {
+      const td = document.createElement('td');
+      td.textContent = cell.text;
+      if (cell.unknown) td.className = 'unknown';
+      tr.appendChild(td);
+    }
+    sheetResolvedBody.appendChild(tr);
+  }
+  sheetResolvedTitle.textContent = 'What each row resolved to — ' + rows.length + ' row(s)';
+  sheetResolved.style.display = 'block';
+}
+
+async function sendSheet(url, isRun) {
+  const token = claimStatus();
+  const file = sheetInput.files && sheetInput.files[0];
+  if (!file) {
+    showStatus('error', 'Choose a .csv or .xlsx file first.');
+    return;
+  }
+
+  sheetPreviewBtn.disabled = true;
+  sheetUploadBtn.disabled = true;
+  clearSheet();
+  showStatus('running', isRun ? 'Checking the sheet…' : 'Resolving the sheet…');
+
+  const form = new FormData();
+  form.append('sheet', file);
+
+  let res, body;
+  try {
+    res = await fetch(url, { method: 'POST', body: form });
+    if (res.status === 401) return location.href = '/login';
+    body = await res.json().catch(() => ({}));
+  } catch (err) {
+    showStatus('error', 'Failed: ' + err.message);
+    sheetPreviewBtn.disabled = false;
+    sheetUploadBtn.disabled = false;
+    return;
+  }
+
+  sheetPreviewBtn.disabled = false;
+  sheetUploadBtn.disabled = false;
+  if (!ownsStatus(token)) return;
+
+  if (res.status === 422) {
+    const messages = [];
+    for (const headerError of body.headerErrors || []) messages.push(headerError);
+    for (const error of body.errors || []) messages.push('Row ' + error.row + ': ' + error.message);
+    showSheetErrors('Fix these and try again', messages);
+    showStatus('error', body.note || ((body.errorCount || messages.length) + ' problem(s) found. Nothing was sent to NSDC.'));
+    return;
+  }
+
+  if (!res.ok) {
+    showStatus('error', body.error || 'Failed');
+    return;
+  }
+
+  if ((body.skippedRows || []).length > 0) {
+    showSheetErrors('Left out', body.skippedRows.map(r => 'Row ' + r.row + ': ' + r.who + ' — ' + r.error));
+  }
+
+  if (isRun) {
+    poll();
+    return;
+  }
+
+  showSheetResolved(body.resolved || []);
+  showStatus('done', body.total + ' certificate(s) would be asked for' +
+    (body.skipped ? ', ' + body.skipped + ' row(s) left out' : '') +
+    '. Nothing was sent to NSDC.');
+  sheetPreviewTitle.textContent = 'Payload preview — showing ' +
+    Math.min(5, body.total) + ' of ' + body.total;
+  sheetPreviewBody.textContent = JSON.stringify(body.payloads, null, 2);
+  sheetPreview.style.display = 'block';
+}
