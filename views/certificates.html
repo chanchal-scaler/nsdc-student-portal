@@ -130,14 +130,43 @@
       </ul>
 
       <div class="or">
-        <p><strong>Check one certificate</strong> — give a candidate and batch already certified on NSDC, and this reads that one certificate back and says what shape it arrived in: the PDF itself, or a link to it. Nothing is generated, nothing is stored, and the certificate stays where it is.</p>
+        <p>Or upload a sheet, one row per candidate. The list above is built from results submitted here, so it can only offer students this portal has seen. A learner whose results reached NSDC some other way is unreachable from it — this sheet names them by the pair NSDC knows them by.</p>
+
+        <ul class="rules">
+          <li>Accepts <code>.csv</code> and <code>.xlsx</code>, up to 10 MB. Columns: <code>candidateId</code>, <code>batchId</code>, and <code>batchName</code> for your own reference.</li>
+          <li><strong>Both IDs are required and neither is looked up.</strong> These learners have no record here for an email or a batch name to resolve against, so the sheet carries what NSDC itself is asked for.</li>
+          <li>A pair whose certificate is already recorded here is skipped, so the same sheet can be run again safely.</li>
+          <li><strong>Preview payload only</strong> shows whose name each ID turned out to be and the exact JSON that would be sent — no request is made and no certificate is issued. A mistyped candidate ID is still a real candidate ID, so this is the one place to catch it.</li>
+        </ul>
+
         <div class="file-row">
-          <input type="text" id="checkCandidate" placeholder="CAN_33690252" style="font-size:0.875rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:8px;width:11rem">
-          <input type="text" id="checkBatch" placeholder="2736691" style="font-size:0.875rem;padding:0.5rem;border:1px solid #d1d5db;border-radius:8px;width:8rem">
-          <button class="btn btn-secondary" id="checkBtn">Check the format</button>
+          <input type="file" id="sheetInput" accept=".csv,.xlsx,.xls">
+          <button class="btn btn-secondary" id="sheetPreviewBtn">Preview payload only</button>
+          <button class="btn btn-primary" id="sheetUploadBtn">Generate from sheet</button>
+          <a class="link-template" href="/api/certificates/template">Download template</a>
         </div>
-        <div class="status" id="checkStatus"></div>
+
+        <div class="resolved" id="sheetResolved">
+          <h2 id="sheetResolvedTitle">What each row resolved to</h2>
+          <div class="resolved-scroll">
+            <table>
+              <thead><tr><th>Row</th><th>Candidate ID</th><th>Student</th><th>Batch ID</th><th>Batch</th></tr></thead>
+              <tbody id="sheetResolvedBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="preview" id="sheetPreview">
+          <h2 id="sheetPreviewTitle">Payload preview</h2>
+          <pre id="sheetPreviewBody"></pre>
+        </div>
+
+        <div class="errors" id="sheetErrors">
+          <h2 id="sheetErrorsTitle">Not sent</h2>
+          <ul id="sheetErrorList"></ul>
+        </div>
       </div>
+
 
       <div class="status" id="status"></div>
       <div class="nsdc-note" id="nsdcNote"></div>

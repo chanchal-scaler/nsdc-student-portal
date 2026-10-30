@@ -8,18 +8,18 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import multer from 'multer';
 import { fetchAndWriteStudents, fetchCandidatesForBatches } from './lib/nsdc.js';
-import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, BATCH_OPTIONAL_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS, ASSESSMENT_SHEET_COLUMNS } from './lib/sheet.js';
+import { parseStudentSheet, parseBatchSheet, parseEnrollmentSheet, parseAssessmentSheet, parseCertificateSheet, TEMPLATE_COLUMNS, BATCH_COLUMNS, BATCH_OPTIONAL_COLUMNS, ENROLLMENT_COLUMNS, ASSESSMENT_COLUMNS, ASSESSMENT_SHEET_COLUMNS, CERTIFICATE_COLUMNS } from './lib/sheet.js';
 import { uploadStudents, buildPayload, isDryRun } from './lib/nsdc-candidates.js';
 import { uploadBatches, buildBatchPayload } from './lib/nsdc-batches.js';
 import { enrollCandidates, buildEnrollmentPayload } from './lib/nsdc-enrollments.js';
 import { submitAssessments, buildAssessmentPayload } from './lib/nsdc-assessments.js';
-import { generateCertificates, buildCertificatePayload, checkOneCertificate } from './lib/nsdc-certificates.js';
+import { generateCertificates, buildCertificatePayload } from './lib/nsdc-certificates.js';
 import { createStore, keep as keepCertificate } from './lib/certificate-store.js';
 import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
-    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef } from './lib/db.js';
+    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded } from './lib/db.js';
 import { verifyPassword } from './lib/passwords.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1325,7 +1325,7 @@ function certificatesLeft(waiting, collected) {
         .map(w => ({ candidateId: w.candidateId, batchId: w.batchId, batchName: w.batchName }));
 }
 
-function startCertJob(waiting, startedBy) {
+function startCertJob(waiting, startedBy, sourceFile = null) {
     resetCertJob();
 
     certJob.state = 'running';
@@ -1361,7 +1361,7 @@ function startCertJob(waiting, startedBy) {
                     batchId: result.batchId,
                     batchName: result.batchName,
                     status: 'CERTIFIED',
-                    sourceFile: null
+                    sourceFile
                 });
             } catch (err) {
                 console.error(`Could not record the certificate for ${result.candidateId}:`, err.message);
@@ -1412,7 +1412,7 @@ function startCertJob(waiting, startedBy) {
         certJob.resultFile = filePath;
         certJob.resultFileName = fileName;
         recordRun({
-            flow: 'certificate', sourceFile: null,
+            flow: 'certificate', sourceFile,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
             total: waiting.length,
             done: generated,
@@ -1438,7 +1438,7 @@ function startCertJob(waiting, startedBy) {
         // stopped touching the rest of the list.
         noteFailure({ flow: 'certificate', startedBy, kind: 'run-stopped', error: err });
         recordRun({
-            flow: 'certificate', sourceFile: null,
+            flow: 'certificate', sourceFile,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
             total: waiting.length,
             done: collected.filter(r => r.status === 'GENERATED').length,
@@ -2643,32 +2643,140 @@ app.get('/api/certificates/result', requireLogin, (req, res) => {
     res.download(certJob.resultFile, certJob.resultFileName);
 });
 
-app.post('/api/certificates/check', requireLogin, async (req, res) => {
-    const candidateId = String(req.body.candidateId || '').trim().toUpperCase();
-    const batchId = Number(String(req.body.batchId || '').trim());
 
-    if (!/^CAN_\d+$/.test(candidateId)) {
-        return res.status(400).json({ error: `candidateId "${req.body.candidateId || ''}" is not a candidate ID — they read as CAN_ followed by digits` });
+app.get('/api/certificates/template', requireLogin, (req, res) => {
+    const csv = CERTIFICATE_COLUMNS.join(',') + '\n' +
+        'CAN_32356039,2936146,DSML Apr24\n';
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="certificate_template.csv"');
+    res.send(csv);
+});
+
+async function readCertificateUpload(req, res) {
+    if (!req.file) {
+        res.status(400).json({ error: 'No file received' });
+        return null;
     }
-    if (!Number.isInteger(batchId) || batchId < 1) {
-        return res.status(400).json({ error: `batchId "${req.body.batchId || ''}" is not a batch ID — they are whole numbers` });
+    if (!/\.(csv|xlsx|xls)$/i.test(req.file.originalname)) {
+        res.status(400).json({ error: 'Upload a .csv or .xlsx file' });
+        return null;
     }
 
+    let parsed;
     try {
-        const answer = await checkOneCertificate({
-            userName: NSDC_USERNAME,
-            password: NSDC_PASSWORD,
-            candidateId,
-            batchId
-        });
-        res.json({ candidateId, batchId, ...answer });
+        parsed = await parseCertificateSheet(req.file.buffer, req.file.originalname);
     } catch (err) {
-        noteFailure({
-            flow: 'certificate', startedBy: req.session.userEmail,
-            subject: candidateId, error: err, call: err.call
-        });
-        res.status(502).json({ error: err.message, httpStatus: err.httpStatus || null });
+        res.status(400).json({ error: `Could not read the file: ${err.message}` });
+        return null;
     }
+
+    if (parsed.headerErrors.length > 0 || parsed.errors.length > 0) {
+        res.status(422).json({
+            headerErrors: parsed.headerErrors,
+            errors: parsed.errors.slice(0, 200),
+            errorCount: parsed.errors.length,
+            validRows: parsed.rows.length,
+            ignoredColumns: parsed.ignoredColumns
+        });
+        return null;
+    }
+
+    if (parsed.rows.length === 0) {
+        res.status(400).json({ error: 'The sheet has no rows' });
+        return null;
+    }
+
+    return parsed;
+}
+
+async function resolveCertificateRows(rows) {
+    const ready = [];
+    const skipped = [];
+    const seen = new Set();
+
+    for (const row of rows) {
+        const pair = `${row.candidateId}|${row.batchId}`;
+        if (seen.has(pair)) {
+            skipped.push({ ...row, status: 'SKIPPED', error: 'Listed twice in this sheet — sent once' });
+            continue;
+        }
+        seen.add(pair);
+
+        const known = await findCandidateById(row.candidateId);
+        const batch = await findBatchById(row.batchId);
+        const already = await certificateRecorded(row.candidateId, row.batchId);
+
+        if (already) {
+            skipped.push({
+                ...row, status: 'SKIPPED',
+                name: known ? known.name : '',
+                error: 'A certificate is already recorded here for this pair'
+            });
+            continue;
+        }
+
+        ready.push({
+            ...row,
+            name: known ? known.name : '',
+            email: known ? known.email : '',
+            batchName: row.batchName || (batch ? batch.batch_name : '')
+        });
+    }
+
+    return { ready, skipped };
+}
+
+app.post('/api/certificates/preview', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    const parsed = await readCertificateUpload(req, res);
+    if (!parsed) return;
+
+    const { ready, skipped } = await resolveCertificateRows(parsed.rows);
+
+    res.json({
+        total: ready.length,
+        skipped: skipped.length,
+        skippedRows: skipped.map(r => ({ row: r.rowNumber, who: r.candidateId, error: r.error })).slice(0, 200),
+        resolved: ready.map(r => ({
+            row: r.rowNumber,
+            candidateId: r.candidateId,
+            batchId: r.batchId,
+            batchName: r.batchName || '',
+            name: r.name || '',
+            known: Boolean(r.name)
+        })).slice(0, 200),
+        payloads: ready.slice(0, 5).map(r => ({
+            row: r.rowNumber,
+            method: 'POST',
+            url: `${NSDC_BASE_URL}/api/v1/cert/certificate?for=trainingPartner`,
+            body: buildCertificatePayload(r.candidateId, r.batchId)
+        }))
+    });
+});
+
+app.post('/api/certificates/upload', requireLogin, sheetUpload.single('sheet'), async (req, res) => {
+    if (certJob.state === 'running') {
+        return res.status(409).json({ error: 'A certificate run is already in progress' });
+    }
+
+    const parsed = await readCertificateUpload(req, res);
+    if (!parsed) return;
+
+    const { ready, skipped } = await resolveCertificateRows(parsed.rows);
+
+    if (ready.length === 0) {
+        return res.status(422).json({
+            headerErrors: [],
+            errors: skipped.map(r => ({ row: r.rowNumber, message: r.error })),
+            errorCount: skipped.length,
+            validRows: 0,
+            note: skipped.length > 0
+                ? `${skipped.length} row(s) already have a certificate recorded here; nothing left to ask for.`
+                : 'No row could be read.'
+        });
+    }
+
+    startCertJob(ready, req.session.userEmail, req.file.originalname);
+    res.json({ started: true, total: ready.length, skipped: skipped.length });
 });
 
 
