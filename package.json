@@ -19,6 +19,7 @@
     "express": "^4.19.2",
     "express-session": "^1.18.0",
     "fetch-cookie": "^3.0.1",
+    "google-auth-library": "^11.3.3",
     "helmet": "^7.1.0",
     "memorystore": "^1.6.7",
     "multer": "^2.3.0",

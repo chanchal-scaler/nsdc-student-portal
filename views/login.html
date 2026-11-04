@@ -47,6 +47,16 @@
     cursor: pointer;
   }
   button:hover { background: #1d4ed8; }
+  .btn {
+    display: block; width: 100%; padding: 0.6875rem; text-align: center;
+    background: #2563eb; color: #fff; border-radius: 8px;
+    font-size: 0.9375rem; font-weight: 600; text-decoration: none;
+  }
+  .btn:hover { background: #1d4ed8; }
+  .note { color: #6b7280; font-size: 0.8125rem; margin-top: 0.875rem; }
+  .dev { display: none; margin-top: 1.5rem; border-top: 1px solid #e5e7eb; padding-top: 1.25rem; }
+  .dev-title { color: #92400e; background: #fffbeb; border: 1px solid #fde68a;
+    border-radius: 8px; padding: 0.5rem 0.625rem; font-size: 0.75rem; margin-bottom: 0.875rem; }
   .error {
     background: #fef2f2;
     color: #b91c1c;
@@ -64,12 +74,14 @@
     <h1>NSDC Student Portal</h1>
     <p class="sub">Sign in to download student data</p>
     <div class="error" id="error"></div>
-    <form method="POST" action="/login">
-      <label for="email">Email</label>
-      <input type="email" id="email" name="email" required autocomplete="username" autofocus>
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" required autocomplete="current-password">
-      <button type="submit">Sign in</button>
+    <a class="btn" href="/auth/google">Sign in with Scaler</a>
+    <p class="note" id="note"></p>
+
+    <form class="dev" id="dev" method="POST" action="/auth/dev">
+      <p class="dev-title">Local testing only — this is not on the deployed portal.</p>
+      <label for="email">Pretend Google confirmed this address</label>
+      <input type="email" id="email" name="email" required autocomplete="username">
+      <button type="submit">Sign in without Google</button>
     </form>
   </div>
   <script src="/login.js"></script>
