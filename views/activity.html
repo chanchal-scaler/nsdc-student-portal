@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Activity — NSDC Student Portal</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f3f4f6;
+    min-height: 100vh;
+    padding: 1rem;
+  }
+  .container { max-width: 1040px; margin: 3rem auto; }
+  .topnav { display: flex; gap: 0.25rem; margin-bottom: 1.25rem;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.375rem;
+    overflow-x: auto; scrollbar-width: none; }
+  .topnav::-webkit-scrollbar { display: none; }
+  .topnav a { padding: 0.4rem 0.6rem; border-radius: 7px; font-size: 0.8125rem;
+    color: #4b5563; text-decoration: none; white-space: nowrap; flex: 0 0 auto; }
+  .topnav a:hover { background: #f3f4f6; color: #111827; }
+  .topnav a.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.375rem; color: #111827; }
+  .whoami { font-size: 0.75rem; color: #6b7280; margin-top: 0.25rem; }
+  .logout button {
+    background: none; border: 1px solid #d1d5db; color: #374151;
+    padding: 0.4rem 0.9rem; border-radius: 8px; font-size: 0.8125rem; cursor: pointer;
+  }
+  .logout button:hover { background: #f9fafb; }
+  .card {
+    background: #fff; border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    padding: 2rem;
+  }
+  .card > p.lede { color: #6b7280; font-size: 0.9rem; margin-bottom: 1.25rem; }
+
+  .filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+    margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid #f3f4f6; }
+  .filters select {
+    font: inherit; font-size: 0.8125rem; padding: 0.4rem 2rem 0.4rem 0.625rem;
+    border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #374151;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+  th, td { text-align: left; padding: 0.5rem 0.625rem; border-bottom: 1px solid #f3f4f6;
+    vertical-align: top; }
+  th { color: #6b7280; font-weight: 600; font-size: 0.75rem;
+    text-transform: uppercase; letter-spacing: 0.03em; }
+  td.when { color: #6b7280; white-space: nowrap; }
+  td.who { color: #111827; }
+  td.detail { color: #4b5563; word-break: break-all; }
+
+  .tag { font-size: 0.6875rem; font-weight: 600; padding: 0.125rem 0.5rem;
+    border-radius: 999px; white-space: nowrap; background: #f3f4f6; color: #4b5563; }
+  .tag.login { background: #ecfdf5; color: #065f46; }
+  .tag.refused { background: #fef2f2; color: #b91c1c; }
+  .tag.download { background: #fff7ed; color: #9a3412; }
+  .tag.access { background: #f5f3ff; color: #5b21b6; }
+  .tag.run { background: #eff6ff; color: #1e40af; }
+
+  .empty { font-size: 0.875rem; color: #6b7280; background: #f9fafb; border: 1px solid #e5e7eb;
+    border-radius: 8px; padding: 1.25rem; text-align: center; }
+  .error-box { font-size: 0.875rem; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca;
+    border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: none; }
+  .more { display: none; margin: 1rem auto 0; padding: 0.5rem 1.125rem; cursor: pointer;
+    background: #fff; color: #374151; border: 1px solid #d1d5db; border-radius: 8px;
+    font-size: 0.8125rem; font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a><a href="/certificates">Certificates</a><a href="/failures">Failures</a><a href="/activity" class="active">Activity</a></nav>
+    <div class="header">
+      <div>
+        <h1>Activity</h1>
+        <div class="whoami" id="whoami"></div>
+      </div>
+      <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
+    </div>
+
+    <div class="card">
+      <p class="lede">Who signed in, who was turned away, what was run and what was taken out, newest first. The failures page says what went wrong; this says who was here. Opening this page is not itself recorded.</p>
+
+      <div class="error-box" id="error"></div>
+
+      <div class="filters">
+        <select id="hoursFilter">
+          <option value="24">Last 24 hours</option>
+          <option value="168" selected>Last 7 days</option>
+          <option value="720">Last 30 days</option>
+          <option value="">Any time</option>
+        </select>
+        <select id="actorFilter"><option value="">Everyone</option></select>
+        <select id="actionFilter">
+          <option value="">Everything</option>
+          <option value="login">Signed in</option>
+          <option value="login-refused">Turned away</option>
+          <option value="logout">Signed out</option>
+          <option value="run">Runs</option>
+          <option value="download">Downloads</option>
+          <option value="view-failures">Failures page opened</option>
+          <option value="access-granted">Access granted</option>
+          <option value="access-revoked">Access revoked</option>
+        </select>
+      </div>
+
+      <table>
+        <thead><tr><th>When</th><th>Who</th><th>What</th><th>Detail</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+
+      <div class="empty" id="empty" style="display:none">Nothing recorded yet.</div>
+      <button class="more" id="moreBtn">Load older</button>
+    </div>
+  </div>
+
+  <script src="/activity.js"></script>
+</body>
+</html>

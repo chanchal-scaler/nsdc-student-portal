@@ -19,7 +19,8 @@ import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
-    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded } from './lib/db.js';
+    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded,
+    saveAuditEvent, recentActivity, activityActors } from './lib/db.js';
 import * as sso from './lib/sso.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -134,6 +135,27 @@ function requireLogin(req, res, next) {
     }
     return res.redirect('/login');
 }
+
+function note(actor, action, detail) {
+    if (!dbEnabled) return;
+    saveAuditEvent({ actor, action, detail })
+        .catch(err => console.error(`Could not record "${action}":`, err.message));
+}
+
+const DATA_OUT = /^\/api\/(download\/file|[a-z]+\/result|[a-z]+\/preview\/file|upload\/enrollment-sheet|failures\/export\/csv)$/;
+
+app.use((req, res, next) => {
+    const watched = DATA_OUT.test(req.path) || req.path === '/failures';
+    if (!watched || req.method !== 'GET') return next();
+
+    res.on('finish', () => {
+        if (!req.session || !req.session.loggedIn) return;
+        const action = req.path === '/failures' ? 'view-failures' : 'download';
+        const outcome = res.statusCode === 200 ? req.path : `${req.path} — nothing to give (HTTP ${res.statusCode})`;
+        note(req.session.userEmail, action, outcome);
+    });
+    next();
+});
 
 // ---- Download job state (one job at a time) ----
 const job = {
@@ -363,15 +385,16 @@ async function buildEnrollmentSheet() {
  * be handed back as a sheet to upload next time.
  */
 async function recordRun({ flow, sourceFile, batchNames, total, done, failed,
-    outcome, stopReason, error, remaining, startedAt }) {
+    outcome, stopReason, error, remaining, startedAt, startedBy }) {
     if (!dbEnabled) return;
+    note(startedBy, 'run', `${flow} — ${done} of ${total} done, ${failed} failed (${outcome})`);
     try {
         await saveRun({
             flow, sourceFile,
             batchNames: [...new Set((batchNames || []).filter(Boolean))],
             total, done, failed, outcome, stopReason, error,
             remaining: remaining || [],
-            startedAt
+            startedAt, startedBy
         });
     } catch (err) {
         // A run that worked must not be reported as failed because the record
@@ -457,6 +480,7 @@ function startUploadJob(students, sourceFileName, startedBy) {
         upload.resultFile = filePath;
         upload.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'students',
             sourceFile: sourceFileName,
             batchNames: students.map(r => r.batchName),
@@ -489,6 +513,7 @@ function startUploadJob(students, sourceFileName, startedBy) {
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'students',
             sourceFile: sourceFileName,
             batchNames: students.map(r => r.batchName),
@@ -678,6 +703,7 @@ function startBatchJob({ ready, blocked }, sourceFileName, startedBy) {
         batchJob.resultFile = filePath;
         batchJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'batches',
             sourceFile: sourceFileName,
             batchNames: ready.map(r => r.batchName),
@@ -709,6 +735,7 @@ function startBatchJob({ ready, blocked }, sourceFileName, startedBy) {
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'batches',
             sourceFile: sourceFileName,
             batchNames: ready.map(r => r.batchName),
@@ -953,6 +980,7 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
         enrollJob.resultFile = filePath;
         enrollJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'enrolment',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -981,6 +1009,7 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'enrolment',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -1213,6 +1242,7 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
         assessJob.resultFile = filePath;
         assessJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'completion',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -1241,6 +1271,7 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'completion',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -1405,6 +1436,7 @@ function startCertJob(waiting, startedBy, sourceFile = null) {
         certJob.resultFile = filePath;
         certJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'certificate', sourceFile,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
             total: waiting.length,
@@ -1431,6 +1463,7 @@ function startCertJob(waiting, startedBy, sourceFile = null) {
         // stopped touching the rest of the list.
         noteFailure({ flow: 'certificate', startedBy, kind: 'run-stopped', error: err });
         recordRun({
+            startedBy,
             flow: 'certificate', sourceFile,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
             total: waiting.length,
@@ -1582,6 +1615,7 @@ async function admit(req, res, person) {
 
     if (person.domain !== sso.ALLOWED_DOMAIN) {
         console.warn(`Login refused: ${person.email} is not a ${sso.ALLOWED_DOMAIN} account`);
+        note(person.email, 'login-refused', `not a ${sso.ALLOWED_DOMAIN} account`);
         return loginFailed(res, `Only ${sso.ALLOWED_DOMAIN} accounts can sign in.`);
     }
 
@@ -1599,11 +1633,13 @@ async function admit(req, res, person) {
 
     if (!user) {
         console.warn(`Login refused: ${person.email} signed in but is not on the list`);
+        note(person.email, 'login-refused', 'not on the list');
         return loginFailed(res, 'This account does not have access to the portal yet.');
     }
 
     loginAttempts.delete(req.ip);
     noteLogin(user.email).catch(() => { /* best effort */ });
+    note(user.email, 'login', null);
     // Rotate the session ID on login to prevent session fixation
     return req.session.regenerate(err => {
         if (err) {
@@ -1667,6 +1703,7 @@ if (DEV_LOGIN) {
 }
 
 app.post('/logout', (req, res) => {
+    note(req.session.userEmail, 'logout', null);
     req.session.destroy(() => res.redirect('/login'));
 });
 
@@ -2817,6 +2854,30 @@ app.post('/api/certificates/upload', requireLogin, sheetUpload.single('sheet'), 
  */
 app.get('/failures', requireLogin, (req, res) => {
     res.sendFile(path.join(__dirname, 'views', 'failures.html'));
+});
+
+app.get('/activity', requireLogin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'views', 'activity.html'));
+});
+
+app.get('/api/activity', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so activity is not being recorded' });
+    }
+
+    try {
+        const hours = Number(req.query.hours);
+        const events = await recentActivity({
+            limit: Math.min(100, Math.max(1, Number(req.query.limit) || 50)),
+            before: req.query.before ? Number(req.query.before) : null,
+            actor: req.query.actor || null,
+            action: req.query.action || null,
+            since: hours > 0 ? new Date(Date.now() - hours * 3600 * 1000).toISOString() : null
+        });
+        res.json({ events, actors: await activityActors(), signedInAs: req.session.userEmail || null });
+    } catch (err) {
+        res.status(500).json({ error: `Could not read the activity: ${err.message}` });
+    }
 });
 
 app.get('/api/failures', requireLogin, async (req, res) => {
