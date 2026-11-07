@@ -11,6 +11,5 @@ fetch('/api/login-mode')
   .then(mode => {
     const note = document.getElementById('note');
     note.textContent = 'Only ' + mode.domain + ' accounts that have been given access can sign in.';
-    if (mode.dev) document.getElementById('dev').style.display = 'block';
   })
   .catch(() => {});
