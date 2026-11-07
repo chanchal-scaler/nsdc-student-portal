@@ -28,7 +28,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---- Configuration (all via environment variables) ----
 const PORT = process.env.PORT || 3000;
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-const DEV_LOGIN = process.env.DEV_LOGIN === '1' && !IS_PRODUCTION;
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const NSDC_USERNAME = process.env.NSDC_USERNAME;
 const NSDC_PASSWORD = process.env.NSDC_PASSWORD;
@@ -1601,7 +1600,7 @@ app.get('/login', (req, res) => {
 });
 
 app.get('/api/login-mode', (req, res) => {
-    res.json({ dev: DEV_LOGIN, domain: sso.ALLOWED_DOMAIN, configured: sso.isConfigured });
+    res.json({ domain: sso.ALLOWED_DOMAIN, configured: sso.isConfigured });
 });
 
 function loginFailed(res, message) {
@@ -1690,17 +1689,6 @@ app.get(sso.CALLBACK_PATH, async (req, res) => {
     return admit(req, res, person);
 });
 
-if (DEV_LOGIN) {
-    app.post('/auth/dev', async (req, res) => {
-        const email = String((req.body || {}).email || '').trim().toLowerCase();
-        return admit(req, res, {
-            email,
-            emailVerified: Boolean(email),
-            domain: email.split('@')[1] || '',
-            name: null
-        });
-    });
-}
 
 app.post('/logout', (req, res) => {
     note(req.session.userEmail, 'logout', null);
