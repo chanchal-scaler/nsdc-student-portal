@@ -2,26 +2,24 @@
  * Manages the portal's logins.
  *
  * One shared login could not say whose upload failed. A login per person can,
- * and the failures page names them — so the people who upload get an address
- * and a password each, handed out from here.
+ * and the failures page names them — so the people who upload are listed here.
+ * Google says who somebody is; this list says whether they may come in.
  *
  *   node tools/portal-user.js list
- *   node tools/portal-user.js add priya@scaler.com            (password generated)
- *   node tools/portal-user.js add priya@scaler.com "a-password" "Priya, ops"
+ *   node tools/portal-user.js add priya@scaler.com
+ *   node tools/portal-user.js add priya@scaler.com "Priya, ops"
  *   node tools/portal-user.js off priya@scaler.com
  *
  * Needs DATABASE_URL, the same one the portal uses.
  */
-import crypto from 'crypto';
-import { hashPassword } from '../lib/passwords.js';
 import { initSchema, savePortalUser, listPortalUsers, deactivatePortalUser, isEnabled } from '../lib/db.js';
 
-const [command, email, password, label] = process.argv.slice(2);
+const [command, email, label] = process.argv.slice(2);
 
 function usage() {
     console.log(`Usage:
   node tools/portal-user.js list
-  node tools/portal-user.js add <email> [password] [label]
+  node tools/portal-user.js add <email> [label]
   node tools/portal-user.js off <email>
 
 Set DATABASE_URL first, e.g.
@@ -33,21 +31,12 @@ if (!isEnabled) {
     process.exit(1);
 }
 
-// A generated password is easier to hand out than to invent, and is stronger
-// than one somebody types twice
-function generatePassword() {
-    const alphabet = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-    return Array.from(crypto.randomBytes(16))
-        .map(byte => alphabet[byte % alphabet.length])
-        .join('');
-}
-
 await initSchema();
 
 if (command === 'list') {
     const users = await listPortalUsers();
     if (users.length === 0) {
-        console.log('No logins yet. Anyone signing in is using LOGIN_EMAIL from the environment.');
+        console.log('No logins yet. Nobody can sign in until an address is added here.');
     } else {
         for (const user of users) {
             const last = user.last_login_at
@@ -62,11 +51,9 @@ if (command === 'list') {
         usage();
         process.exit(1);
     }
-    const chosen = password || generatePassword();
-    await savePortalUser({ email, passwordHash: hashPassword(chosen), label: label || null });
-    console.log(`Login ready for ${email.trim().toLowerCase()}`);
-    console.log(`Password: ${chosen}`);
-    console.log('Hand those two over. Only the hash is stored, so this is the one time it can be read.');
+    await savePortalUser({ email, label: label || null });
+    console.log(`${email.trim().toLowerCase()} can now sign in with Google.`);
+    console.log('It has to be the address Google itself returns, not an alias.');
 } else if (command === 'off') {
     if (!email) {
         console.error('Give an email address.');

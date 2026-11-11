@@ -20,14 +20,13 @@ import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
     findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded } from './lib/db.js';
-import { verifyPassword } from './lib/passwords.js';
+import * as sso from './lib/sso.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---- Configuration (all via environment variables) ----
 const PORT = process.env.PORT || 3000;
-const LOGIN_EMAIL = process.env.LOGIN_EMAIL;
-const LOGIN_PASSWORD = process.env.LOGIN_PASSWORD;
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const NSDC_USERNAME = process.env.NSDC_USERNAME;
 const NSDC_PASSWORD = process.env.NSDC_PASSWORD;
@@ -46,8 +45,7 @@ const NSDC_BASE_URL = process.env.NSDC_BASE_URL || 'https://adminservices.skilli
 const DATA_DIR = path.join(__dirname, 'data');
 
 const missing = [];
-if (!LOGIN_EMAIL) missing.push('LOGIN_EMAIL');
-if (!LOGIN_PASSWORD) missing.push('LOGIN_PASSWORD');
+if (IS_PRODUCTION && !sso.isConfigured) missing.push('GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and APP_BASE_URL');
 if (!NSDC_USERNAME) missing.push('NSDC_USERNAME');
 if (!NSDC_PASSWORD) missing.push('NSDC_PASSWORD');
 if (missing.length > 0) {
@@ -96,12 +94,6 @@ app.use(session({
 }));
 
 // ---- Login helpers ----
-function safeEqual(a, b) {
-    const ha = crypto.createHash('sha256').update(String(a)).digest();
-    const hb = crypto.createHash('sha256').update(String(b)).digest();
-    return crypto.timingSafeEqual(ha, hb);
-}
-
 // Basic in-memory rate limiting for login attempts
 const loginAttempts = new Map(); // ip -> { count, firstAt }
 const MAX_ATTEMPTS = 10;
@@ -1574,68 +1566,93 @@ app.get('/login', (req, res) => {
     res.sendFile(path.join(__dirname, 'views', 'login.html'));
 });
 
-/**
- * Who this email and password belong to, or null.
- *
- * A login of our own (portal_users) is checked first; the LOGIN_EMAIL pair in
- * the environment still works, so a portal with no rows in that table — or no
- * database at all — is not locked out.
- */
-async function authenticateUser(email, password) {
-    if (typeof email !== 'string' || typeof password !== 'string') return null;
-    const address = email.trim().toLowerCase();
+app.get('/api/login-mode', (req, res) => {
+    res.json({ domain: sso.ALLOWED_DOMAIN, configured: sso.isConfigured });
+});
 
-    if (dbEnabled) {
-        try {
-            const user = await findPortalUser(address);
-            if (user && verifyPassword(password, user.password_hash)) {
-                return { email: user.email, label: user.label || null, source: 'portal_users' };
-            }
-        } catch (err) {
-            // A database that is unreachable must not lock out the env login
-            console.error('Could not check the stored logins:', err.message);
-        }
-    }
-
-    if (safeEqual(address, LOGIN_EMAIL.toLowerCase()) && safeEqual(password, LOGIN_PASSWORD)) {
-        return { email: LOGIN_EMAIL.toLowerCase(), label: 'Shared login', source: 'environment' };
-    }
-
-    return null;
+function loginFailed(res, message) {
+    res.redirect('/login?error=' + encodeURIComponent(message));
 }
 
-app.post('/login', async (req, res) => {
+async function admit(req, res, person) {
+    if (!person.email || !person.emailVerified) {
+        return loginFailed(res, 'Google did not confirm that email address.');
+    }
+
+    if (person.domain !== sso.ALLOWED_DOMAIN) {
+        console.warn(`Login refused: ${person.email} is not a ${sso.ALLOWED_DOMAIN} account`);
+        return loginFailed(res, `Only ${sso.ALLOWED_DOMAIN} accounts can sign in.`);
+    }
+
+    if (!dbEnabled) {
+        return loginFailed(res, 'Cannot sign in right now — no database is configured. Try again later.');
+    }
+
+    let user;
+    try {
+        user = await findPortalUser(person.email);
+    } catch (err) {
+        console.error('Could not read the list of logins:', err.message);
+        return loginFailed(res, 'Cannot sign in right now — the database is unreachable. Try again later.');
+    }
+
+    if (!user) {
+        console.warn(`Login refused: ${person.email} signed in but is not on the list`);
+        return loginFailed(res, 'This account does not have access to the portal yet.');
+    }
+
+    loginAttempts.delete(req.ip);
+    noteLogin(user.email).catch(() => { /* best effort */ });
+    // Rotate the session ID on login to prevent session fixation
+    return req.session.regenerate(err => {
+        if (err) {
+            console.error('Session regeneration failed:', err);
+            return loginFailed(res, 'Login failed, please try again');
+        }
+        req.session.loggedIn = true;
+        // Every run is recorded against this, so a failure can name the
+        // person whose upload it was
+        req.session.userEmail = user.email;
+        req.session.userLabel = user.label || person.name;
+        res.redirect('/');
+    });
+}
+
+app.get('/auth/google', (req, res) => {
+    if (!sso.isConfigured) {
+        return loginFailed(res, 'Signing in with Google is not set up on this portal.');
+    }
+    const state = crypto.randomBytes(16).toString('hex');
+    req.session.oauthState = state;
+    res.redirect(sso.authUrl(state));
+});
+
+app.get(sso.CALLBACK_PATH, async (req, res) => {
     const ip = req.ip;
     if (isRateLimited(ip)) {
-        return res.redirect('/login?error=' + encodeURIComponent('Too many attempts. Try again in 15 minutes.'));
+        return loginFailed(res, 'Too many attempts. Try again in 15 minutes.');
     }
 
-    const { email, password } = req.body || {};
-    const user = await authenticateUser(email, password);
-    if (user) {
-        loginAttempts.delete(ip);
-        if (user.source === 'portal_users') noteLogin(user.email).catch(() => { /* best effort */ });
-        // Rotate the session ID on login to prevent session fixation
-        return req.session.regenerate(err => {
-            if (err) {
-                console.error('Session regeneration failed:', err);
-                return res.redirect('/login?error=' + encodeURIComponent('Login failed, please try again'));
-            }
-            req.session.loggedIn = true;
-            // Every run is recorded against this, so a failure can name the
-            // person whose upload it was
-            req.session.userEmail = user.email;
-            req.session.userLabel = user.label;
-            res.redirect('/');
-        });
+    const expected = req.session.oauthState;
+    delete req.session.oauthState;
+
+    if (!expected || req.query.state !== expected || !req.query.code) {
+        recordAttempt(ip);
+        return loginFailed(res, 'Login failed, please try again');
     }
 
-    recordAttempt(ip);
-    // Small fixed delay to slow down brute-force attempts
-    setTimeout(() => {
-        res.redirect('/login?error=' + encodeURIComponent('Invalid email or password'));
-    }, 500);
+    let person;
+    try {
+        person = await sso.identify(String(req.query.code));
+    } catch (err) {
+        console.error('Google sign-in failed:', err.message);
+        recordAttempt(ip);
+        return loginFailed(res, 'Could not complete the sign-in with Google.');
+    }
+
+    return admit(req, res, person);
 });
+
 
 app.post('/logout', (req, res) => {
     req.session.destroy(() => res.redirect('/login'));
