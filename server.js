@@ -19,7 +19,9 @@ import { isServiceDown, SERVICE_DOWN_MESSAGE } from './lib/nsdc-status.js';
 import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
-    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded } from './lib/db.js';
+    findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded,
+    saveAuditEvent, recentActivity, activityActors,
+    listPortalUsers, savePortalUser, deactivatePortalUser, countSuperAdmins } from './lib/db.js';
 import * as sso from './lib/sso.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -133,6 +135,35 @@ function requireLogin(req, res, next) {
     }
     return res.redirect('/login');
 }
+
+function requireSuperAdmin(req, res, next) {
+    if (req.session && req.session.loggedIn && req.session.userRole === 'super_admin') return next();
+    if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Not found' });
+    }
+    return res.status(404).send('Not found');
+}
+
+function note(actor, action, detail) {
+    if (!dbEnabled) return;
+    saveAuditEvent({ actor, action, detail })
+        .catch(err => console.error(`Could not record "${action}":`, err.message));
+}
+
+const DATA_OUT = /^\/api\/(download\/file|[a-z]+\/result|[a-z]+\/preview\/file|upload\/enrollment-sheet|failures\/export\/csv)$/;
+
+app.use((req, res, next) => {
+    const watched = DATA_OUT.test(req.path) || req.path === '/failures';
+    if (!watched || req.method !== 'GET') return next();
+
+    res.on('finish', () => {
+        if (!req.session || !req.session.loggedIn) return;
+        const action = req.path === '/failures' ? 'view-failures' : 'download';
+        const outcome = res.statusCode === 200 ? req.path : `${req.path} — nothing to give (HTTP ${res.statusCode})`;
+        note(req.session.userEmail, action, outcome);
+    });
+    next();
+});
 
 // ---- Download job state (one job at a time) ----
 const job = {
@@ -362,15 +393,16 @@ async function buildEnrollmentSheet() {
  * be handed back as a sheet to upload next time.
  */
 async function recordRun({ flow, sourceFile, batchNames, total, done, failed,
-    outcome, stopReason, error, remaining, startedAt }) {
+    outcome, stopReason, error, remaining, startedAt, startedBy }) {
     if (!dbEnabled) return;
+    note(startedBy, 'run', `${flow} — ${done} of ${total} done, ${failed} failed (${outcome})`);
     try {
         await saveRun({
             flow, sourceFile,
             batchNames: [...new Set((batchNames || []).filter(Boolean))],
             total, done, failed, outcome, stopReason, error,
             remaining: remaining || [],
-            startedAt
+            startedAt, startedBy
         });
     } catch (err) {
         // A run that worked must not be reported as failed because the record
@@ -456,6 +488,7 @@ function startUploadJob(students, sourceFileName, startedBy) {
         upload.resultFile = filePath;
         upload.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'students',
             sourceFile: sourceFileName,
             batchNames: students.map(r => r.batchName),
@@ -488,6 +521,7 @@ function startUploadJob(students, sourceFileName, startedBy) {
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'students',
             sourceFile: sourceFileName,
             batchNames: students.map(r => r.batchName),
@@ -677,6 +711,7 @@ function startBatchJob({ ready, blocked }, sourceFileName, startedBy) {
         batchJob.resultFile = filePath;
         batchJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'batches',
             sourceFile: sourceFileName,
             batchNames: ready.map(r => r.batchName),
@@ -708,6 +743,7 @@ function startBatchJob({ ready, blocked }, sourceFileName, startedBy) {
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'batches',
             sourceFile: sourceFileName,
             batchNames: ready.map(r => r.batchName),
@@ -952,6 +988,7 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
         enrollJob.resultFile = filePath;
         enrollJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'enrolment',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -980,6 +1017,7 @@ function startEnrollJob({ groups, unresolved, skipped }, sourceFileName, started
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'enrolment',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -1212,6 +1250,7 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
         assessJob.resultFile = filePath;
         assessJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'completion',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -1240,6 +1279,7 @@ function startAssessJob({ groups, unresolved, skipped }, sourceFileName, started
             kind: 'run-stopped', error: err
         });
         recordRun({
+            startedBy,
             flow: 'completion',
             sourceFile: sourceFileName,
             batchNames: groups.map(g => g.batchName),
@@ -1404,6 +1444,7 @@ function startCertJob(waiting, startedBy, sourceFile = null) {
         certJob.resultFile = filePath;
         certJob.resultFileName = fileName;
         recordRun({
+            startedBy,
             flow: 'certificate', sourceFile,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
             total: waiting.length,
@@ -1430,6 +1471,7 @@ function startCertJob(waiting, startedBy, sourceFile = null) {
         // stopped touching the rest of the list.
         noteFailure({ flow: 'certificate', startedBy, kind: 'run-stopped', error: err });
         recordRun({
+            startedBy,
             flow: 'certificate', sourceFile,
             batchNames: [...new Set(waiting.map(w => w.batchName))],
             total: waiting.length,
@@ -1581,6 +1623,7 @@ async function admit(req, res, person) {
 
     if (person.domain !== sso.ALLOWED_DOMAIN) {
         console.warn(`Login refused: ${person.email} is not a ${sso.ALLOWED_DOMAIN} account`);
+        note(person.email, 'login-refused', `not a ${sso.ALLOWED_DOMAIN} account`);
         return loginFailed(res, `Only ${sso.ALLOWED_DOMAIN} accounts can sign in.`);
     }
 
@@ -1598,11 +1641,13 @@ async function admit(req, res, person) {
 
     if (!user) {
         console.warn(`Login refused: ${person.email} signed in but is not on the list`);
+        note(person.email, 'login-refused', 'not on the list');
         return loginFailed(res, 'This account does not have access to the portal yet.');
     }
 
     loginAttempts.delete(req.ip);
     noteLogin(user.email).catch(() => { /* best effort */ });
+    note(user.email, 'login', null);
     // Rotate the session ID on login to prevent session fixation
     return req.session.regenerate(err => {
         if (err) {
@@ -1614,6 +1659,7 @@ async function admit(req, res, person) {
         // person whose upload it was
         req.session.userEmail = user.email;
         req.session.userLabel = user.label || person.name;
+        req.session.userRole = user.role;
         res.redirect('/');
     });
 }
@@ -1655,6 +1701,7 @@ app.get(sso.CALLBACK_PATH, async (req, res) => {
 
 
 app.post('/logout', (req, res) => {
+    note(req.session.userEmail, 'logout', null);
     req.session.destroy(() => res.redirect('/login'));
 });
 
@@ -2807,6 +2854,30 @@ app.get('/failures', requireLogin, (req, res) => {
     res.sendFile(path.join(__dirname, 'views', 'failures.html'));
 });
 
+app.get('/activity', requireLogin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'views', 'activity.html'));
+});
+
+app.get('/api/activity', requireLogin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so activity is not being recorded' });
+    }
+
+    try {
+        const hours = Number(req.query.hours);
+        const events = await recentActivity({
+            limit: Math.min(100, Math.max(1, Number(req.query.limit) || 50)),
+            before: req.query.before ? Number(req.query.before) : null,
+            actor: req.query.actor || null,
+            action: req.query.action || null,
+            since: hours > 0 ? new Date(Date.now() - hours * 3600 * 1000).toISOString() : null
+        });
+        res.json({ events, actors: await activityActors(), signedInAs: req.session.userEmail || null });
+    } catch (err) {
+        res.status(500).json({ error: `Could not read the activity: ${err.message}` });
+    }
+});
+
 app.get('/api/failures', requireLogin, async (req, res) => {
     if (!dbEnabled) {
         return res.status(503).json({ error: 'No database is configured, so failures are not being recorded' });
@@ -2899,8 +2970,72 @@ app.get('/api/failures/:id', requireLogin, async (req, res) => {
 app.get('/api/me', requireLogin, (req, res) => {
     res.json({
         email: req.session.userEmail || null,
-        label: req.session.userLabel || null
+        label: req.session.userLabel || null,
+        role: req.session.userRole || 'admin'
     });
+});
+
+app.get('/users', requireSuperAdmin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'views', 'users.html'));
+});
+
+app.get('/api/users', requireSuperAdmin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no list of logins' });
+    }
+    try {
+        res.json({ users: await listPortalUsers(), signedInAs: req.session.userEmail || null });
+    } catch (err) {
+        res.status(500).json({ error: `Could not read the list of logins: ${err.message}` });
+    }
+});
+
+app.post('/api/users', requireSuperAdmin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is nowhere to keep logins' });
+    }
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const label = String(req.body.label || '').trim();
+    const role = req.body.role === 'super_admin' ? 'super_admin' : 'admin';
+
+    if (!email.includes('@')) {
+        return res.status(400).json({ error: 'Give an email address.' });
+    }
+    if (!email.endsWith(`@${sso.ALLOWED_DOMAIN}`)) {
+        return res.status(400).json({ error: `Only ${sso.ALLOWED_DOMAIN} addresses can be given access.` });
+    }
+
+    try {
+        await savePortalUser({ email, label: label || null, role });
+        note(req.session.userEmail, 'access-granted', role === 'super_admin' ? `${email} — super admin` : email);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: `Could not save that login: ${err.message}` });
+    }
+});
+
+app.post('/api/users/off', requireSuperAdmin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no list of logins' });
+    }
+    const email = String(req.body.email || '').trim().toLowerCase();
+
+    if (email === String(req.session.userEmail || '').toLowerCase()) {
+        return res.status(400).json({ error: 'You cannot take away your own access.' });
+    }
+
+    try {
+        const user = await findPortalUser(email);
+        if (user && user.role === 'super_admin' && await countSuperAdmins() <= 1) {
+            return res.status(400).json({ error: 'This is the last super admin. Make somebody else one first.' });
+        }
+        const turnedOff = await deactivatePortalUser(email);
+        if (!turnedOff) return res.status(404).json({ error: `No login for ${email}.` });
+        note(req.session.userEmail, 'access-revoked', email);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: `Could not change that login: ${err.message}` });
+    }
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));
