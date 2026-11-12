@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Logins — NSDC Student Portal</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f3f4f6;
+    min-height: 100vh;
+    padding: 1rem;
+  }
+  .container { max-width: 1040px; margin: 3rem auto; }
+  .topnav { display: flex; gap: 0.25rem; margin-bottom: 1.25rem;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: 10px; padding: 0.375rem;
+    overflow-x: auto; scrollbar-width: none; }
+  .topnav::-webkit-scrollbar { display: none; }
+  .topnav a { padding: 0.4rem 0.6rem; border-radius: 7px; font-size: 0.8125rem;
+    color: #4b5563; text-decoration: none; white-space: nowrap; flex: 0 0 auto; }
+  .topnav a:hover { background: #f3f4f6; color: #111827; }
+  .topnav a.active { background: #eff6ff; color: #1d4ed8; font-weight: 600; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  h1 { font-size: 1.375rem; color: #111827; }
+  .whoami { font-size: 0.75rem; color: #6b7280; margin-top: 0.25rem; }
+  .logout button {
+    background: none; border: 1px solid #d1d5db; color: #374151;
+    padding: 0.4rem 0.9rem; border-radius: 8px; font-size: 0.8125rem; cursor: pointer;
+  }
+  .logout button:hover { background: #f9fafb; }
+  .card {
+    background: #fff; border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    padding: 2rem;
+  }
+  .card > p.lede { color: #6b7280; font-size: 0.9rem; margin-bottom: 1.25rem; }
+
+  .add { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center;
+    margin-bottom: 1.25rem; padding-bottom: 1.25rem; border-bottom: 1px solid #f3f4f6; }
+  .add input, .add select {
+    font: inherit; font-size: 0.8125rem; padding: 0.4rem 0.625rem;
+    border: 1px solid #d1d5db; border-radius: 8px; background: #fff; color: #374151;
+  }
+  .add input { min-width: 240px; }
+  .add input:focus, .add select:focus { outline: none; border-color: #2563eb; }
+  .btn { padding: 0.4rem 1rem; border: none; border-radius: 8px;
+    font-size: 0.8125rem; font-weight: 600; cursor: pointer; background: #2563eb; color: #fff; }
+  .btn:hover { background: #1d4ed8; }
+  .btn:disabled { background: #93c5fd; cursor: not-allowed; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+  th, td { text-align: left; padding: 0.5rem 0.625rem; border-bottom: 1px solid #f3f4f6;
+    vertical-align: middle; }
+  th { color: #6b7280; font-weight: 600; font-size: 0.75rem;
+    text-transform: uppercase; letter-spacing: 0.03em; }
+  td.who { color: #111827; }
+  td.when { color: #6b7280; white-space: nowrap; }
+  tr.off td { color: #9ca3af; }
+
+  .tag { font-size: 0.6875rem; font-weight: 600; padding: 0.125rem 0.5rem;
+    border-radius: 999px; white-space: nowrap; background: #f3f4f6; color: #4b5563; }
+  .tag.super { background: #f5f3ff; color: #5b21b6; }
+  .tag.off { background: #fef2f2; color: #b91c1c; }
+
+  .off-btn { background: none; border: 1px solid #d1d5db; color: #b91c1c;
+    padding: 0.25rem 0.625rem; border-radius: 7px; font-size: 0.75rem; cursor: pointer; }
+  .off-btn:hover { background: #fef2f2; }
+
+  .empty { font-size: 0.875rem; color: #6b7280; background: #f9fafb; border: 1px solid #e5e7eb;
+    border-radius: 8px; padding: 1.25rem; text-align: center; }
+  .error-box { font-size: 0.875rem; color: #b91c1c; background: #fef2f2; border: 1px solid #fecaca;
+    border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: none; }
+  .done-box { font-size: 0.875rem; color: #065f46; background: #ecfdf5; border: 1px solid #a7f3d0;
+    border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: none; }
+</style>
+</head>
+<body>
+  <div class="container">
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete">Completion</a><a href="/certificates">Certificates</a><a href="/failures">Failures</a><a href="/activity">Activity</a><a href="/users" class="active">Logins</a></nav>
+    <div class="header">
+      <div>
+        <h1>Logins</h1>
+        <div class="whoami" id="whoami"></div>
+      </div>
+      <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
+    </div>
+
+    <div class="card">
+      <p class="lede">Everybody who may sign in to this portal. Google says who somebody is; this list says whether they may come in. An admin can use every page here; a super admin can also change this list. Access is turned off rather than deleted, so past uploads keep naming the person who ran them.</p>
+
+      <div class="error-box" id="error"></div>
+      <div class="done-box" id="done"></div>
+
+      <div class="add">
+        <input type="email" id="emailInput" placeholder="name@scaler.com" autocomplete="off">
+        <input type="text" id="labelInput" placeholder="Name (optional)" autocomplete="off">
+        <select id="roleInput">
+          <option value="admin">Admin</option>
+          <option value="super_admin">Super admin</option>
+        </select>
+        <button class="btn" id="addBtn">Give access</button>
+      </div>
+
+      <table>
+        <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last signed in</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+
+      <div class="empty" id="empty" style="display:none">Nobody can sign in yet.</div>
+    </div>
+  </div>
+
+  <script src="/users.js"></script>
+</body>
+</html>

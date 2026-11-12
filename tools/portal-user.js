@@ -14,15 +14,21 @@
  */
 import { initSchema, savePortalUser, listPortalUsers, deactivatePortalUser, findPortalUser, countPortalUsers, saveAuditEvent, isEnabled } from '../lib/db.js';
 
-const args = process.argv.slice(2);
-const byIndex = args.indexOf('--by');
-const by = byIndex === -1 ? null : args[byIndex + 1];
-const [command, email, label] = byIndex === -1 ? args : args.slice(0, byIndex);
+const argv = process.argv.slice(2);
+const args = [];
+let by = null;
+let role = null;
+for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--by') by = argv[++i];
+    else if (argv[i] === '--role') role = argv[++i];
+    else args.push(argv[i]);
+}
+const [command, email, label] = args;
 
 function usage() {
     console.log(`Usage:
   node tools/portal-user.js list
-  node tools/portal-user.js add <email> [label] --by <your email>
+  node tools/portal-user.js add <email> [label] [--role admin|super_admin] --by <your email>
   node tools/portal-user.js off <email> --by <your email>
 
 Set DATABASE_URL first, e.g.
@@ -58,7 +64,8 @@ if (command === 'list') {
             const last = user.last_login_at
                 ? new Date(user.last_login_at).toISOString().slice(0, 16).replace('T', ' ')
                 : 'never signed in';
-            console.log(`${user.active ? ' ' : 'x'} ${user.email}${user.label ? ` (${user.label})` : ''} — ${last}`);
+            const role = user.role === 'super_admin' ? ' [super admin]' : '';
+            console.log(`${user.active ? ' ' : 'x'} ${user.email}${user.label ? ` (${user.label})` : ''}${role} — ${last}`);
         }
     }
 } else if (command === 'add') {
@@ -67,10 +74,18 @@ if (command === 'list') {
         usage();
         process.exit(1);
     }
+    if (role && role !== 'admin' && role !== 'super_admin') {
+        console.error('--role must be admin or super_admin.');
+        process.exit(1);
+    }
     const actor = await grantedBy();
-    await savePortalUser({ email, label: label || null });
-    await saveAuditEvent({ actor, action: 'access-granted', detail: email.trim().toLowerCase() });
-    console.log(`${email.trim().toLowerCase()} can now sign in with Google.`);
+    await savePortalUser({ email, label: label || null, role });
+    await saveAuditEvent({
+        actor,
+        action: 'access-granted',
+        detail: role === 'super_admin' ? `${email.trim().toLowerCase()} — super admin` : email.trim().toLowerCase()
+    });
+    console.log(`${email.trim().toLowerCase()} can now sign in with Google${role === 'super_admin' ? ' as a super admin' : ''}.`);
     console.log('It has to be the address Google itself returns, not an alias.');
 } else if (command === 'off') {
     if (!email) {

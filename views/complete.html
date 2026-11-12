@@ -87,7 +87,7 @@
 </head>
 <body>
   <div class="container">
-    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete" class="active">Completion</a><a href="/certificates">Certificates</a><a href="/failures">Failures</a><a href="/activity">Activity</a></nav>
+    <nav class="topnav"><a href="/">Download data</a><a href="/history">Enrolled so far</a><a href="/upload">Students</a><a href="/batches">Batches</a><a href="/enroll">Enrolment</a><a href="/complete" class="active">Completion</a><a href="/certificates">Certificates</a><a href="/failures">Failures</a><a href="/activity">Activity</a><a href="/users" class="su-only" style="display:none">Logins</a></nav>
     <div class="header">
       <h1>Mark batch completed</h1>
       <form class="logout" method="POST" action="/logout"><button type="submit">Sign out</button></form>
@@ -138,5 +138,6 @@
   </div>
 
   <script src="/complete.js"></script>
+  <script src="/nav.js"></script>
 </body>
 </html>

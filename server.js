@@ -20,7 +20,8 @@ import { PROGRAMMES } from './lib/batch-name.js';
 import { initSchema, saveCandidate, saveBatch, saveEnrollment, getPendingEnrollments, findCandidateByEmail, findBatchByName, findCandidateById, findBatchById, getEnrolledPairs, getCompletedPairs, pendingCertificates, countStudentsForBatch, enrolmentHistory, saveRun, recentRuns, runRemaining,
     allBatchIds, saveNsdcBatchStudents, saveNsdcSync, nsdcSyncState, findBatchByName as lookupBatch, isEnabled as dbEnabled,
     findPortalUser, noteLogin, countPortalUsers, recordApiFailure, apiFailures, apiFailure, saveCertificateRef, certificateRecorded,
-    saveAuditEvent, recentActivity, activityActors } from './lib/db.js';
+    saveAuditEvent, recentActivity, activityActors,
+    listPortalUsers, savePortalUser, deactivatePortalUser, countSuperAdmins } from './lib/db.js';
 import * as sso from './lib/sso.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -133,6 +134,14 @@ function requireLogin(req, res, next) {
         return res.status(401).json({ error: 'Not logged in' });
     }
     return res.redirect('/login');
+}
+
+function requireSuperAdmin(req, res, next) {
+    if (req.session && req.session.loggedIn && req.session.userRole === 'super_admin') return next();
+    if (req.path.startsWith('/api/')) {
+        return res.status(404).json({ error: 'Not found' });
+    }
+    return res.status(404).send('Not found');
 }
 
 function note(actor, action, detail) {
@@ -1650,6 +1659,7 @@ async function admit(req, res, person) {
         // person whose upload it was
         req.session.userEmail = user.email;
         req.session.userLabel = user.label || person.name;
+        req.session.userRole = user.role;
         res.redirect('/');
     });
 }
@@ -2960,8 +2970,72 @@ app.get('/api/failures/:id', requireLogin, async (req, res) => {
 app.get('/api/me', requireLogin, (req, res) => {
     res.json({
         email: req.session.userEmail || null,
-        label: req.session.userLabel || null
+        label: req.session.userLabel || null,
+        role: req.session.userRole || 'admin'
     });
+});
+
+app.get('/users', requireSuperAdmin, (req, res) => {
+    res.sendFile(path.join(__dirname, 'views', 'users.html'));
+});
+
+app.get('/api/users', requireSuperAdmin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no list of logins' });
+    }
+    try {
+        res.json({ users: await listPortalUsers(), signedInAs: req.session.userEmail || null });
+    } catch (err) {
+        res.status(500).json({ error: `Could not read the list of logins: ${err.message}` });
+    }
+});
+
+app.post('/api/users', requireSuperAdmin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is nowhere to keep logins' });
+    }
+    const email = String(req.body.email || '').trim().toLowerCase();
+    const label = String(req.body.label || '').trim();
+    const role = req.body.role === 'super_admin' ? 'super_admin' : 'admin';
+
+    if (!email.includes('@')) {
+        return res.status(400).json({ error: 'Give an email address.' });
+    }
+    if (!email.endsWith(`@${sso.ALLOWED_DOMAIN}`)) {
+        return res.status(400).json({ error: `Only ${sso.ALLOWED_DOMAIN} addresses can be given access.` });
+    }
+
+    try {
+        await savePortalUser({ email, label: label || null, role });
+        note(req.session.userEmail, 'access-granted', role === 'super_admin' ? `${email} — super admin` : email);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: `Could not save that login: ${err.message}` });
+    }
+});
+
+app.post('/api/users/off', requireSuperAdmin, async (req, res) => {
+    if (!dbEnabled) {
+        return res.status(503).json({ error: 'No database is configured, so there is no list of logins' });
+    }
+    const email = String(req.body.email || '').trim().toLowerCase();
+
+    if (email === String(req.session.userEmail || '').toLowerCase()) {
+        return res.status(400).json({ error: 'You cannot take away your own access.' });
+    }
+
+    try {
+        const user = await findPortalUser(email);
+        if (user && user.role === 'super_admin' && await countSuperAdmins() <= 1) {
+            return res.status(400).json({ error: 'This is the last super admin. Make somebody else one first.' });
+        }
+        const turnedOff = await deactivatePortalUser(email);
+        if (!turnedOff) return res.status(404).json({ error: `No login for ${email}.` });
+        note(req.session.userEmail, 'access-revoked', email);
+        res.json({ ok: true });
+    } catch (err) {
+        res.status(500).json({ error: `Could not change that login: ${err.message}` });
+    }
 });
 
 app.get('/health', (req, res) => res.json({ ok: true }));
